@@ -1,0 +1,40 @@
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '16px', 'fontFamily': 'Arial'}}}%%
+graph TD
+    subgraph CCRS["CCRs: Car-to-Car Rear Stationary"]
+        S1["Ego: 20-50 km/h<br/>Target: 0 km/h (stopped)<br/>Gap: 100 m"]
+        S1P["PASS: v_impact < 5 km/h<br/>or collision avoided"]
+        S1 --> S1P
+    end
+
+    subgraph CCRM["CCRm: Car-to-Car Rear Moving"]
+        S2["Ego: 50 km/h<br/>Target: 20 km/h (constant)<br/>Gap: 100 m"]
+        S2P["PASS: Δv ≥ 20 km/h reduction<br/>or collision avoided"]
+        S2 --> S2P
+    end
+
+    subgraph CCRB["CCRb: Car-to-Car Rear Braking"]
+        S3["Both: 50 km/h<br/>Target brakes: -2 or -6 m/s²<br/>Gap: 12 or 40 m<br/>Brake onset: t=2s"]
+        S3P["PASS: v_impact < 15 km/h<br/>or collision avoided"]
+        S3 --> S3P
+    end
+
+    subgraph MATRIX["Test Matrix (8 tests)"]
+        T1["CCRs @ 20 km/h"]
+        T2["CCRs @ 30 km/h"]
+        T3["CCRs @ 40 km/h"]
+        T4["CCRs @ 50 km/h"]
+        T5["CCRm 50 vs 20 km/h"]
+        T6["CCRb -2m/s² gap=12m"]
+        T7["CCRb -2m/s² gap=40m"]
+        T8["CCRb -6m/s² gap=12m"]
+        T9["CCRb -6m/s² gap=40m"]
+    end
+
+    CCRS --> T1 & T2 & T3 & T4
+    CCRM --> T5
+    CCRB --> T6 & T7 & T8 & T9
+
+    style CCRS fill:#e8f5e9,stroke:#388e3c
+    style CCRM fill:#e3f2fd,stroke:#1976d2
+    style CCRB fill:#fce4ec,stroke:#c62828
+    style MATRIX fill:#fff9c4,stroke:#f9a825

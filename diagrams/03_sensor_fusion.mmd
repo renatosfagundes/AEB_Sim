@@ -1,0 +1,65 @@
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '16px', 'fontFamily': 'Arial'}}}%%
+graph TD
+    subgraph GT["Ground Truth (Plant)"]
+        D_TRUE["d_true [m]"]
+        V_TRUE["v_rel_true [m/s]"]
+        V_EGO["v_ego_true [m/s]"]
+    end
+
+    subgraph RADAR["Radar 77 GHz (50 Hz)"]
+        R_NOISE["Add Gaussian Noise<br/>d: N(0, 0.15²)<br/>v: N(0, 0.05²)"]
+        R_LAT["Latency Buffer<br/>40 ms delay"]
+        R_OUT["d_radar, v_radar"]
+    end
+
+    subgraph LIDAR_S["LiDAR (20 Hz)"]
+        L_NOISE["Add Gaussian Noise<br/>d: N(0, 0.03²)"]
+        L_LAT["Latency Buffer<br/>50 ms delay"]
+        L_DIFF["Velocity from<br/>Finite Difference<br/>v = Δd / Δt"]
+        L_OUT["d_lidar"]
+    end
+
+    subgraph KALMAN["Kalman Filter Fusion"]
+        PRED["Prediction Step<br/>x̂⁻ = F·x̂ + B·u<br/>P⁻ = F·P·Fᵀ + Q<br/><br/>F = [1, dt; 0, 1]<br/>Q = diag(0.1, 0.5)"]
+        UPD_R["Radar Update<br/>H = [1, 0; 0, 1]<br/>R = diag(0.15², 0.05²)<br/>K = P⁻·Hᵀ·(H·P⁻·Hᵀ+R)⁻¹<br/>x̂ = x̂⁻ + K·(z - H·x̂⁻)"]
+        UPD_L["LiDAR Update<br/>H = [1, 0]<br/>R = [0.03²]<br/>K = P⁻·Hᵀ·(H·P⁻·Hᵀ+R)⁻¹<br/>x̂ = x̂⁻ + K·(z - H·x̂⁻)"]
+        CONF["Confidence Calc<br/>Both: 1.0<br/>Single: 0.7<br/>None: 0.0"]
+    end
+
+    subgraph WSS_S["Wheel Speed Sensor"]
+        WSS_N["Add Noise<br/>N(0, 0.02²)"]
+    end
+
+    subgraph PLAUS["Plausibility Checks (FR-PER-006)"]
+        CHK1["Range: 0.5 ≤ d ≤ 300 m"]
+        CHK2["Speed: 0 ≤ v ≤ 50 m/s"]
+        CHK3["|Δd/Δt| ≤ 50 m/s"]
+        CHK4["|Δv/Δt| ≤ 15 m/s²"]
+        FAULT["Fault Detector<br/>3 consecutive invalid<br/>→ fault flag (FR-PER-007)"]
+    end
+
+    subgraph OUTPUT["PerceptionData"]
+        OUT["d_fused, v_ego, v_target<br/>v_rel, confidence<br/>brake_pedal, steering_angle<br/>fault"]
+    end
+
+    D_TRUE --> R_NOISE --> R_LAT --> R_OUT
+    V_TRUE --> R_NOISE
+    D_TRUE --> L_NOISE --> L_LAT --> L_DIFF --> L_OUT
+    V_EGO --> WSS_N
+
+    R_OUT -->|"every 20ms"| UPD_R
+    L_OUT -->|"every 50ms"| UPD_L
+    PRED --> UPD_R --> CONF
+    PRED --> UPD_L --> CONF
+
+    CONF -->|"d_fused, v_rel_fused"| CHK1
+    WSS_N -->|"v_ego"| CHK2
+    CHK1 --> CHK3 --> CHK4 --> FAULT --> OUT
+
+    style GT fill:#e3f2fd,stroke:#1976d2
+    style RADAR fill:#fff3e0,stroke:#f57c00
+    style LIDAR_S fill:#e0f7fa,stroke:#0097a7
+    style KALMAN fill:#fce4ec,stroke:#c62828
+    style WSS_S fill:#f1f8e9,stroke:#558b2f
+    style PLAUS fill:#fff9c4,stroke:#f9a825
+    style OUTPUT fill:#f3e5f5,stroke:#7b1fa2

@@ -1,0 +1,32 @@
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '16px', 'fontFamily': 'Arial'}}}%%
+graph LR
+    subgraph NODES["CAN 2.0B Bus @ 500 kbps"]
+        direction TB
+        BUS["CAN Bus<br/>ISO 11898-2<br/>120Ω termination<br/>Bus load: ~7.15%"]
+    end
+
+    subgraph ECU1["Radar ECU"]
+        R1["0x120 AEB_RadarTarget<br/>DLC=8, T=20ms (50Hz)<br/><br/>distance: uint16 × 0.01 [m]<br/>rel_speed: int16 × 0.01 [m/s]<br/>TTC: uint16 × 0.001 [s]<br/>confidence: uint8 [0-15]"]
+    end
+
+    subgraph ECU2["Vehicle ECU (ABS/ESP)"]
+        R2["0x100 AEB_EgoVehicle<br/>DLC=8, T=10ms (100Hz)<br/><br/>ego_speed: uint16 × 0.01 [m/s]<br/>acceleration: int16 × 0.001 [m/s²]<br/>yaw_rate: int16 × 0.01 [°/s]<br/>steering_angle: int16 × 0.1 [°]"]
+    end
+
+    subgraph ECU3["AEB Controller"]
+        R3["0x080 AEB_BrakeCmd<br/>DLC=4, T=10ms (100Hz)<br/>HIGHEST PRIORITY<br/><br/>brake_request: bit0<br/>brake_pressure: 15bit × 0.1 [bar]<br/>mode: 3bit<br/>alive: 4bit (E2E)<br/>CRC: 4bit (E2E)"]
+        R4["0x200 AEB_FSMState<br/>DLC=4, T=50ms (20Hz)<br/><br/>fsm_state: 4bit (enum)<br/>alert_level: 3bit<br/>brake_active: 1bit<br/>ttc_threshold: uint16 × 0.001"]
+        R5["0x300 AEB_Alert<br/>DLC=2, Event-triggered<br/><br/>alert_type: 4bit (enum)<br/>alert_active: 1bit<br/>buzzer_cmd: 2bit"]
+    end
+
+    ECU1 -->|"20ms"| BUS
+    ECU2 -->|"10ms"| BUS
+    BUS -->|"10ms"| ECU3
+    ECU3 -->|"10ms"| BUS
+    ECU3 -->|"50ms"| BUS
+    ECU3 -.->|"event"| BUS
+
+    style NODES fill:#fff9c4,stroke:#f9a825
+    style ECU1 fill:#fff3e0,stroke:#f57c00
+    style ECU2 fill:#e3f2fd,stroke:#1976d2
+    style ECU3 fill:#fce4ec,stroke:#c62828

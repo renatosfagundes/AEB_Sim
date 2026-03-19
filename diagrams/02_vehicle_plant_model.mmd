@@ -1,0 +1,47 @@
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '16px', 'fontFamily': 'Arial'}}}%%
+graph TD
+    subgraph INPUTS["Inputs"]
+        BC["Brake Command<br/>[0-100%]"]
+    end
+
+    subgraph ACTUATOR["Brake Actuator Model"]
+        DEAD["Dead Time Buffer<br/>θ = 30 ms"]
+        LAG["First-Order Lag<br/>τ = 50 ms<br/>y(k) = y(k-1) + (dt/τ)·(u-y(k-1))"]
+        SAT["Saturation<br/>0 ≤ a_brake ≤ 10 m/s²"]
+    end
+
+    subgraph FORCES["Force Computation"]
+        FBRK["F_brake = m · a_brake"]
+        FDRAG["F_drag = ½ · ρ · Cd · Af · v²<br/>ρ=1.225, Cd=0.32, Af=2.73"]
+        FROLL["F_roll = m · g · Cr<br/>Cr=0.015"]
+        FSUM["ΣF = -F_brake - F_drag - F_roll"]
+    end
+
+    subgraph DYNAMICS["1-DOF Dynamics (Euler Integration @ 1kHz)"]
+        ACCEL["a = ΣF / m<br/>m = 1500 kg"]
+        VEL["v(k+1) = max(0, v(k) + a·dt)"]
+        POS["x(k+1) = x(k) + v(k)·dt"]
+    end
+
+    subgraph OUTPUTS["Outputs"]
+        OUT_X["x [m]"]
+        OUT_V["v [m/s]"]
+        OUT_A["a [m/s²]"]
+    end
+
+    BC --> DEAD --> LAG --> SAT
+    SAT -->|"a_brake"| FBRK
+    FBRK --> FSUM
+    FDRAG --> FSUM
+    FROLL --> FSUM
+    FSUM --> ACCEL --> VEL --> POS
+    VEL -->|"v feedback"| FDRAG
+    POS --> OUT_X
+    VEL --> OUT_V
+    ACCEL --> OUT_A
+
+    style INPUTS fill:#e3f2fd,stroke:#1976d2
+    style ACTUATOR fill:#fff3e0,stroke:#f57c00
+    style FORCES fill:#e8f5e9,stroke:#388e3c
+    style DYNAMICS fill:#fce4ec,stroke:#c62828
+    style OUTPUTS fill:#f3e5f5,stroke:#7b1fa2

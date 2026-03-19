@@ -1,0 +1,60 @@
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '18px', 'fontFamily': 'Arial'}}}%%
+graph TB
+    subgraph ENV["Environment (Plant Model)"]
+        TGT["Target Vehicle<br/>x_t, v_t, a_t"]
+        EGO["Ego Vehicle<br/>1-DOF: m·dv/dt = -F_brake - F_drag - F_roll"]
+    end
+
+    subgraph SENSORS["Sensor Layer"]
+        RADAR["Radar 77GHz<br/>50 Hz, σ_d=0.15m, σ_v=0.05m/s<br/>Latency: 40ms"]
+        LIDAR["LiDAR<br/>20 Hz, σ_d=0.03m<br/>Latency: 50ms"]
+        WSS["Wheel Speed Sensor<br/>100 Hz, σ=0.02 m/s"]
+        FUSION["Kalman Fusion<br/>State: [d, v_rel]<br/>R_radar, R_lidar"]
+    end
+
+    subgraph PERCEPTION["Perception Layer (perception.c)"]
+        VALID["Plausibility Checks<br/>Range: [0.5, 300]m<br/>Rate-of-change limits<br/>3-cycle fault detection"]
+    end
+
+    subgraph DECISION["Decision Layer"]
+        TTC_CALC["TTC Calculator (ttc_calculator.c)<br/>TTC = d / v_rel<br/>d_brake = v² / (2·a_max)"]
+        FSM_MOD["FSM (fsm.c)<br/>7 states, TTC thresholds<br/>Hysteresis: 0.2s debounce"]
+        ALERT_MOD["Alert (alert.c)<br/>Visual + Audible<br/>800ms min before brake"]
+    end
+
+    subgraph EXECUTION["Execution Layer"]
+        PID["PID Controller (brake_controller.c)<br/>Kp=4, Ki=0.05<br/>Jerk limit: 10 m/s³"]
+        ACTUATOR["Brake Actuator<br/>G(s) = 1/(0.05s+1)·e^(-0.03s)<br/>Max: 10 m/s²"]
+    end
+
+    subgraph CAN["CAN Bus 500 kbps"]
+        CAN_BUS["ISO 11898 CAN 2.0B<br/>5 messages, ~7% bus load<br/>E2E: Alive + CRC"]
+    end
+
+    TGT -->|"d_true, v_rel_true"| RADAR
+    TGT -->|"d_true"| LIDAR
+    EGO -->|"v_ego_true"| WSS
+    RADAR -->|"d_meas, v_meas"| FUSION
+    LIDAR -->|"d_meas"| FUSION
+    FUSION -->|"d_fused, v_fused, confidence"| VALID
+    WSS -->|"v_ego_meas"| VALID
+    VALID -->|"PerceptionData"| TTC_CALC
+    TTC_CALC -->|"TTC, d_brake"| FSM_MOD
+    VALID -->|"brake_pedal, steering"| FSM_MOD
+    FSM_MOD -->|"state, target_decel"| PID
+    FSM_MOD -->|"state"| ALERT_MOD
+    PID -->|"brake_cmd [0-100%]"| ACTUATOR
+    ACTUATOR -->|"F_brake"| EGO
+
+    VALID -.->|"0x100 EgoVehicle<br/>10ms"| CAN_BUS
+    FUSION -.->|"0x120 RadarTarget<br/>20ms"| CAN_BUS
+    PID -.->|"0x080 BrakeCmd<br/>10ms"| CAN_BUS
+    FSM_MOD -.->|"0x200 FSMState<br/>50ms"| CAN_BUS
+    ALERT_MOD -.->|"0x300 Alert<br/>event"| CAN_BUS
+
+    style ENV fill:#e3f2fd,stroke:#1976d2
+    style SENSORS fill:#fff3e0,stroke:#f57c00
+    style PERCEPTION fill:#e8f5e9,stroke:#388e3c
+    style DECISION fill:#fce4ec,stroke:#c62828
+    style EXECUTION fill:#f3e5f5,stroke:#7b1fa2
+    style CAN fill:#fff9c4,stroke:#f9a825

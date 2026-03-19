@@ -1,0 +1,45 @@
+# ── ROS2 / Colcon build artifacts ─────────────────────────────────────────
+gazebo_sim/build/
+gazebo_sim/install/
+gazebo_sim/log/
+.ros/
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+*.egg
+
+# ── C / C++ compiled ──────────────────────────────────────────────────────
+*.o
+*.a
+*.so
+*.out
+c_embedded/build/
+
+# ── LaTeX ─────────────────────────────────────────────────────────────────
+*.aux
+*.log
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# ── Misc ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+*.bak
+
+# ── Large / private media in docs ─────────────────────────────────────────
+docs/*.jpeg
+docs/*.jpg
+docs/*.mp4
+docs/*.pptx
+docs/*.docx

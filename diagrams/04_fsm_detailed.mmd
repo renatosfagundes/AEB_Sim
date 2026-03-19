@@ -1,0 +1,39 @@
+%%{init: {'theme': 'base', 'themeVariables': {'fontSize': '20px', 'fontFamily': 'Arial'}, 'flowchart': {'padding': 15, 'nodeSpacing': 30, 'rankSpacing': 60, 'wrappingWidth': 200}}}%%
+graph TD
+    START(( )) --> OFF
+
+    OFF["<b>OFF</b><br/>brake = 0%<br/>alerts = OFF"]
+    STANDBY["<b>STANDBY</b><br/>brake = 0%<br/>alerts = OFF"]
+    WARNING["<b>WARNING</b><br/>decel = 0 m/s²<br/>visual = ON<br/>buzzer = INTERMITTENT"]
+    BL1["<b>BRAKE_L1</b><br/>decel = 2 m/s²<br/>visual = ON<br/>buzzer = CONTINUOUS"]
+    BL2["<b>BRAKE_L2</b><br/>decel = 4 m/s²<br/>visual = ON<br/>buzzer = CONTINUOUS"]
+    BL3["<b>BRAKE_L3</b><br/>decel = 6 m/s²<br/>visual = ON<br/>buzzer = CONTINUOUS"]
+    PB["<b>POST_BRAKE</b><br/>brake = 50%<br/>hold 2.0s"]
+
+    OFF -->|"AEB on + no fault"| STANDBY
+    STANDBY -->|"fault / AEB off"| OFF
+
+    STANDBY -->|"TTC ≤ 4.0s<br/>v ∈ [10,60] km/h<br/>closing, no override"| WARNING
+
+    WARNING -->|"TTC ≤ 3.0s<br/>warning ≥ 800ms"| BL1
+    BL1 -->|"TTC ≤ 2.2s"| BL2
+    BL2 -->|"TTC ≤ 1.8s"| BL3
+
+    WARNING -.->|"TTC > 4.15s<br/>debounce 200ms"| STANDBY
+    BL1 -.->|"TTC > 3.15s<br/>debounce 200ms"| WARNING
+    BL2 -.->|"TTC > 2.35s<br/>debounce 200ms"| BL1
+    BL3 -.->|"TTC > 1.95s<br/>debounce 200ms"| BL2
+
+    BL1 -->|"v = 0"| PB
+    BL2 -->|"v = 0"| PB
+    BL3 -->|"v = 0"| PB
+
+    PB -->|"2.0s elapsed<br/>or accelerator"| STANDBY
+
+    style OFF fill:#ffcccc,stroke:#cc0000,stroke-width:2px,color:#000
+    style STANDBY fill:#fff3cd,stroke:#cc9900,stroke-width:2px,color:#000
+    style WARNING fill:#ffe0b2,stroke:#e65100,stroke-width:2px,color:#000
+    style BL1 fill:#ffcc80,stroke:#e65100,stroke-width:2px,color:#000
+    style BL2 fill:#ff9800,stroke:#e65100,stroke-width:2px,color:#000
+    style BL3 fill:#f44336,stroke:#b71c1c,stroke-width:2px,color:#fff
+    style PB fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px,color:#000

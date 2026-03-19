@@ -15,13 +15,13 @@
 Este repositório implementa um sistema AEB (*Autonomous Emergency Braking*) completo em três camadas, desenvolvido como projeto final da Residência Tecnológica Stellantis. O sistema detecta risco de colisão traseira, emite alertas progressivos ao motorista e aplica frenagem autônoma de emergência — tudo com código C embarcado compatível com microcontroladores automotivos reais.
 
 ```mermaid
-block-beta
-  columns 1
-  C3["CAMADA 3 — Simulação Gazebo (ROS2 Humble)\nperception_node.py · scenario_controller.py · dashboard_node.py"]
-  C2["CAMADA 2 — Nó de Controle C++ (aeb_controller_node.cpp)\nThin wrapper ROS2 — zero lógica AEB aqui"]
-  C1["CAMADA 1 — Biblioteca C Embarcada (MISRA C:2012)\naeb_main · aeb_fsm · aeb_ttc · aeb_perception · aeb_pid · aeb_alert"]
-  C3 --> C2
-  C2 --> C1
+flowchart TD
+    C3["<b>CAMADA 3</b> — Simulação Gazebo / ROS2 Humble<br/>perception_node · scenario_controller · dashboard_node"]
+    C2["<b>CAMADA 2</b> — Nó de Controle C++ (aeb_controller_node)<br/>Thin wrapper ROS2 — zero lógica AEB aqui"]
+    C1["<b>CAMADA 1</b> — Biblioteca C Embarcada · MISRA C:2012<br/>aeb_main · aeb_fsm · aeb_ttc · aeb_perception · aeb_pid · aeb_alert"]
+
+    C3 -->|"tópicos ROS2 (CAN simulado)"| C2
+    C2 -->|"chamada C direta: aeb_cycle_10ms()"| C1
 ```
 
 ### Cenários Validados (Euro NCAP CCR)
@@ -82,40 +82,32 @@ Mensagens estruturadas que espelham o arquivo DBC real (`can/aeb_system.dbc`):
 ## Máquina de Estados (7 Estados)
 
 ```mermaid
-stateDiagram-v2
-    [*] --> STANDBY
+flowchart LR
+    OFF(["OFF"])
+    STANDBY(["STANDBY"])
+    WARNING(["WARNING<br/>alerta visual+sonoro"])
+    L1(["BRAKE_L1<br/>−2 m/s²"])
+    L2(["BRAKE_L2<br/>−4 m/s²"])
+    L3(["BRAKE_L3<br/>−6 m/s²"])
+    PB(["POST_BRAKE<br/>−6 m/s² · 2 s"])
 
-    OFF --> STANDBY : falha limpa
-
-    STANDBY --> WARNING : TTC ≤ 4,0 s
-    STANDBY --> OFF : falha sensor
-
-    WARNING --> STANDBY : TTC > 4,0 s + 200 ms
-    WARNING --> BRAKE_L1 : TTC ≤ 3,0 s\nalerta ≥ 0,8 s
-    WARNING --> BRAKE_L2 : TTC ≤ 2,2 s\nalerta ≥ 0,8 s
-    WARNING --> BRAKE_L3 : TTC ≤ 1,8 s\nalerta ≥ 0,8 s
-
-    BRAKE_L1 : BRAKE_L1\n−2 m/s²
-    BRAKE_L2 : BRAKE_L2\n−4 m/s²
-    BRAKE_L3 : BRAKE_L3\n−6 m/s²
-    POST_BRAKE : POST_BRAKE\n−6 m/s² · 2 s
-
-    BRAKE_L1 --> BRAKE_L2 : TTC ≤ 2,2 s
-    BRAKE_L1 --> BRAKE_L3 : TTC ≤ 1,8 s
-    BRAKE_L1 --> WARNING : TTC > 3,0 s + 200 ms
-    BRAKE_L1 --> POST_BRAKE : v_ego = 0
-
-    BRAKE_L2 --> BRAKE_L3 : TTC ≤ 1,8 s
-    BRAKE_L2 --> BRAKE_L1 : TTC > 2,2 s + 200 ms
-    BRAKE_L2 --> POST_BRAKE : v_ego = 0
-
-    BRAKE_L3 --> BRAKE_L2 : TTC > 1,8 s + 200 ms
-    BRAKE_L3 --> POST_BRAKE : v_ego = 0
-
-    POST_BRAKE --> STANDBY : 2,0 s decorridos
-
-    note right of STANDBY : v_ego ∈ [5, 60] km/h
-    note right of WARNING : alerta visual + sonoro
+    OFF -->|"falha limpa"| STANDBY
+    STANDBY -->|"falha sensor"| OFF
+    STANDBY -->|"TTC ≤ 4,0 s"| WARNING
+    WARNING -->|"TTC > 4,0 s + 200 ms"| STANDBY
+    WARNING -->|"TTC ≤ 3,0 s + 0,8 s alerta"| L1
+    WARNING -->|"TTC ≤ 2,2 s + 0,8 s alerta"| L2
+    WARNING -->|"TTC ≤ 1,8 s + 0,8 s alerta"| L3
+    L1 -->|"TTC ≤ 2,2 s"| L2
+    L1 -->|"TTC ≤ 1,8 s"| L3
+    L1 -->|"TTC > 3,0 s + 200 ms"| WARNING
+    L1 -->|"v = 0"| PB
+    L2 -->|"TTC ≤ 1,8 s"| L3
+    L2 -->|"TTC > 2,2 s + 200 ms"| L1
+    L2 -->|"v = 0"| PB
+    L3 -->|"TTC > 1,8 s + 200 ms"| L2
+    L3 -->|"v = 0"| PB
+    PB -->|"2,0 s"| STANDBY
 ```
 
 **Piso de distância** (impede de-escalada prematura enquanto freando):

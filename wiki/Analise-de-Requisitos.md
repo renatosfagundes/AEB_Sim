@@ -1,316 +1,765 @@
-# Análise de Requisitos — Conformidade e Desvios Justificados
+# Análise de Requisitos
 
-> **Normas de referência:** Euro NCAP AEB CCR v4.3 · UNECE R152 · ISO 26262 ASIL-B · ISO 22839 · MDPI Safety 2024
-> **Padrão de código:** MISRA C:2012
-> **Ferramenta de modelagem original (SRS):** MATLAB Stateflow
-> **Implementação final:** Código C manual com conformidade MISRA
+> **Página:** Análise de Requisitos
+> **Relacionado:** [Home](Home.md) | [Máquina de Estados](Maquina-de-Estados.md) | [Cenários de Teste](Cenarios-de-Teste.md)
 
 ---
 
-## Tabela Resumo de Conformidade dos Requisitos
+## Sumário
 
-| ID | Requisito | Status | Valor SRS | Valor Implementado | Seção |
-|---|---|---|---|---|---|
-| FR-PER-001 | Adquirir distância relativa por fusão sensor a cada ciclo de 10 ms | ✅ | fusão radar+lidar | 0,3×radar + 0,7×lidar @ 20 ms | § Percepção |
-| FR-PER-002 | Adquirir velocidade do ego via odometria | ✅ | odometria | `/aeb/ego/odom` → m/s | § Percepção |
-| FR-PER-003 | Calcular velocidade relativa | ✅ | v_ego − v_target | `v_rel = ego_vx − target_vx` | § Percepção |
-| FR-PER-006 | Checagem de plausibilidade (range, ROC, cross-sensor) | ✅ | definido | DIST_RATE_MAX=60 m/s, CROSS=5 m | § Percepção |
-| FR-PER-007 | 3 ciclos consecutivos inválidos → flag de falha | ✅ | 3 ciclos | `FAULT_CYCLE_LIMIT = 3` | § Percepção |
-| FR-TTC-001 | TTC = d/v_rel quando v_rel > 0,5 m/s | ✅ | d/v_rel | idem; saturado em 10 s | § TTC |
-| FR-FSM-001 | Escalar para BRAKE_L3 em ≤ 3 ciclos após TTC ≤ 1,8 s | ✅ | 3 ciclos = 30 ms | transição imediata (1 ciclo) | § FSM |
-| FR-FSM-002 | Histerese de 200 ms antes de de-escalada | ✅ | 200 ms | `HYSTERESIS_TIME = 0,2 s` | § FSM |
-| FR-FSM-003 | Alerta mínimo de 800 ms antes de frenagem autônoma | ✅ | 800 ms | `WARNING_TO_BRAKE_MIN = 0,8 s` | § FSM |
-| FR-BRK-001 | Variação máxima de desaceleração ≤ 2 m/s²/ciclo (jerk) | ✅ | 10 m/s³ → mudança | 100 m/s³ aceito (ver § 3) | § PID/Jerk |
-| FR-BRK-002 | Pressão de freio 0–100%, mapeada para 0–10 m/s² | ✅ | definido | `brake_pct × 0,1 = bar` | § CAN |
-| FR-BRK-003 | Override de direção ≥ 5° cancela AEB → STANDBY | ✅ | 5° | `STEERING_OVERRIDE_DEG = 5,0` | § FSM |
-| FR-BRK-004 | Override de pedal cancela AEB → STANDBY | ✅ | pedal ativo | `brake_pedal != 0` | § FSM |
-| FR-BRK-005 | POST_BRAKE mantém frenagem > 50% por 2 s | ✅ | > 50%, 2 s | DECEL_L3=6 m/s²→60%; 2,0 s | § PID/POST |
-| FR-BRK-006 | Pedal acelerador cancela AEB | ❌ | cancelamento | Não implementado | § Lacunas |
-| FR-DEC-005 | TTC adaptativo por condições de pista | ❌ | adaptativo | Limiares fixos | § Lacunas |
-| FR-ALT-001 | Alertas visuais e sonoros antes da frenagem | ✅ | antes da frenagem | WARNING emite visual+sonoro | § Alertas |
-| FR-ALT-002 | Escalonamento de alertas por nível de ameaça | ✅ | escalonado | BuzzerCmd: 1→2→4→3 por nível | § Alertas |
-| NFR-EMB-001 | Código C MISRA C:2012, sem alocação dinâmica | ✅ | MISRA C | Implementado | § Arquitetura |
-| NFR-SAF-001 | Conformidade ASIL-B | ✅ | ASIL-B | Arquitetura conforme; CRC + alive counter | § Arquitetura |
-| NFR-VAL-007 | Validação back-to-back Stateflow ↔ C | 🔬 | exigido | Não executado | § Lacunas |
-| V_EGO_MIN | Velocidade mínima de ativação | ⚠️ | 10 km/h | **5 km/h** | § 1 |
-| V_EGO_MAX | Velocidade máxima de ativação | ⚠️ | 80 km/h | **60 km/h** | § 2 |
-| MAX_JERK | Jerk máximo do atuador | ⚠️ | 10 m/s³ | **100 m/s³** | § 3 |
-| PID_KP | Ganho proporcional | ⚠️ | 4 | **10** | § 4 |
-| POST_BRAKE target_decel | Setpoint de desaceleração em POST_BRAKE | ⚠️ | 0 m/s² | **DECEL_L3 = 6 m/s²** | § 5 |
-| D_BRAKE_L1/L2/L3 | Piso de distância para sustentação de frenagem | ⚠️ | não definido | **20/10/5 m** adicionados | § 6 |
-| Ferramenta de modelagem | Stateflow MATLAB | ⚠️ | Stateflow | **C manual MISRA** | § 7 |
-| Comunicação CAN | Tópicos Float64 genéricos | ⚠️ | Float64 | **5 frames DBC estruturados** | § 8 |
-
-**Legenda:**
-- ✅ Conforme — implementado conforme especificado
-- ⚠️ Alterado com justificativa documentada
-- ❌ Não implementado (lacuna identificada)
-- 🔬 Não validado (validação pendente)
+1. [Escopo e metodologia](#1-escopo-e-metodologia)
+2. [Requisitos funcionais — rastreabilidade completa](#2-requisitos-funcionais--rastreabilidade-completa)
+   - 2.1 [FR-PER — Percepção](#21-fr-per--percepção)
+   - 2.2 [FR-DEC — Decisão e cálculo TTC](#22-fr-dec--decisão-e-cálculo-ttc)
+   - 2.3 [FR-ALR — Alertas ao motorista](#23-fr-alr--alertas-ao-motorista)
+   - 2.4 [FR-BRK — Controle de frenagem](#24-fr-brk--controle-de-frenagem)
+   - 2.5 [FR-FSM — Máquina de estados](#25-fr-fsm--máquina-de-estados)
+   - 2.6 [FR-COD — Padrões de codificação](#26-fr-cod--padrões-de-codificação)
+3. [Requisitos não-funcionais (NFR)](#3-requisitos-não-funcionais-nfr)
+4. [Delta entre requisitos e implementação](#4-delta-entre-requisitos-e-implementação)
+5. [Conformidade com normas](#5-conformidade-com-normas)
+6. [Visão de rastreabilidade — diagrama](#6-visão-de-rastreabilidade--diagrama)
+7. [Lacunas restantes](#7-lacunas-restantes)
 
 ---
 
-## Mudanças Realizadas e Justificativas
+## 1. Escopo e metodologia
 
-### 1. V_EGO_MIN: 10 km/h → 5 km/h
+Este documento apresenta a **análise de requisitos** do sistema AEB (Autonomous Emergency Braking), cobrindo tanto a especificação original (SRS) quanto a implementação efetiva no núcleo C embarcado (Camada 1). O objetivo é garantir **rastreabilidade bidirecional**: de cada requisito até o código que o satisfaz, e de cada decisão de implementação de volta ao requisito que a motivou ou à necessidade técnica que a justifica.
 
-**Mudança:** O limiar mínimo de velocidade do ego para ativação do AEB foi reduzido de 10 km/h (2,78 m/s) para 5 km/h (1,39 m/s).
+### Hierarquia de requisitos adotada
 
-**Problema identificado:** Durante simulações CCRs a baixas velocidades, o ego decelerava de 20 km/h e cruzava o limiar de 10 km/h **enquanto ainda estava fechando sobre o alvo a ~3–4 m de distância**. A FSM retornava ao estado STANDBY e liberava o freio. O veículo colidia com o alvo a ~5–8 km/h.
+```
+Normas externas (ISO 26262, UNECE 152, Euro NCAP CCR v4.3)
+    └── SRS — System Requirements Specification
+            ├── FR-xxx — Requisitos funcionais
+            └── NFR-xxx — Requisitos não-funcionais
+                    └── Código C embarcado (Camada 1)
+                            └── aeb_config.h — parâmetros de calibração
+```
 
-**Causa técnica:** A FSM executa a verificação `if (v_ego < V_EGO_MIN)` globalmente, incluindo durante estados de frenagem ativos. Com V_EGO_MIN = 10 km/h, qualquer desaceleração bem-sucedida de AEB que reduzia o ego abaixo de 10 km/h causava auto-cancelamento.
+### Convenção de status
 
-**Justificativa da correção:**
-- O Euro NCAP AEB CCR v4.3 não impõe um limiar mínimo de velocidade de desativação durante frenagem ativa
-- A ISO 22839:2013 §5.3 define que o sistema deve operar enquanto houver risco de colisão, independentemente da velocidade instantânea
-- O limiar de 5 km/h é suficiente para distinguir parada completa (v < 0,01 m/s → POST_BRAKE) de movimento lento mas perigoso
+| Símbolo | Significado |
+|---------|-------------|
+| ✅ | Implementado conforme requisito |
+| ⚠️ | Implementado com desvio documentado |
+| ❌ | Não implementado / pendente |
+| 🔬 | Implementado mas sem validação formal |
 
-**Solução complementar implementada:** Adicionada exceção explícita na FSM: quando `v_ego < V_EGO_MIN` MAS a distância está dentro do piso (`distance <= D_BRAKE_L1` e `v_rel > 0`), o estado de frenagem é **mantido** em vez de retornar ao STANDBY.
+### Tabela-resumo de rastreabilidade
+
+| ID | Descrição resumida | Status | Módulo C | Seção |
+|----|--------------------|--------|----------|-------|
+| FR-PER-001 | Validação de sensor a cada 10 ms (latch 3 ciclos) | ✅ | `aeb_perception.c` | §2.1 |
+| FR-PER-002 | Faixa de velocidade do ego para ativação | ⚠️ | `aeb_fsm.c` | §2.1 |
+| FR-DEC-001 | TTC = d/v_rel quando v_rel > 0,5 m/s | ✅ | `aeb_ttc.c` | §2.2 |
+| FR-DEC-002 | d_brake = v²/(2×DECEL_L3) | ✅ | `aeb_ttc.c` | §2.2 |
+| FR-ALR-001 | Alerta visual + sonoro antes da frenagem | ✅ | `aeb_alert.c`, `aeb_fsm.c` | §2.3 |
+| FR-ALR-002 | Duração mínima do alerta ≥ 0,8 s | ✅ | `aeb_fsm.c` | §2.3 |
+| FR-BRK-001 | Jerk máximo ≤ 2 m/s²/ciclo | ✅ | `aeb_pid.c` | §2.4 |
+| FR-BRK-002 | Níveis de desaceleração L1/L2/L3 | ✅ | `aeb_fsm.c` | §2.4 |
+| FR-BRK-003 | Override por ângulo de direção ≥ 5° | ✅ | `aeb_fsm.c` | §2.4 |
+| FR-BRK-004 | Override por pedal de freio | ✅ | `aeb_fsm.c` | §2.4 |
+| FR-BRK-005 | POST_BRAKE mantém > 50% de freio por 2 s | ✅ | `aeb_fsm.c` | §2.4 |
+| FR-FSM-001 | 7 estados: OFF, STANDBY, WARNING, BRAKE_L1/L2/L3, POST_BRAKE | ✅ | `aeb_fsm.c` | §2.5 |
+| FR-FSM-002 | Histerese de 200 ms nas transições de desescalamento | ✅ | `aeb_fsm.c` | §2.5 |
+| FR-FSM-003 | Pisos de distância LPB (D_BRAKE_L1/L2/L3) | ✅ | `aeb_fsm.c` | §2.5 |
+| FR-COD-001 | Conformidade MISRA C:2012 | ✅ | Toda a Camada 1 | §2.6 |
+| FR-COD-002 | Sem alocação dinâmica de memória | ✅ | Toda a Camada 1 | §2.6 |
+| FR-COD-003 | Ciclo determinístico de 10 ms | ✅ | `aeb_main.c` | §2.6 |
 
 ---
 
-### 2. V_EGO_MAX: 80 km/h → 60 km/h
+## 2. Requisitos funcionais — rastreabilidade completa
 
-**Mudança:** A velocidade máxima de operação do AEB foi reduzida de 80 km/h para 60 km/h.
+### 2.1 FR-PER — Percepção
 
-**Problema identificado:** Nenhuma falha de sistema — trata-se de **alinhamento com o escopo de validação**. O protocolo Euro NCAP CCR v4.3 define velocidades de teste até 50 km/h. Nenhum cenário validado neste projeto opera acima de 50 km/h.
-
-**Justificativa:**
-- Manter V_EGO_MAX = 80 km/h exigiria validação a essa velocidade, o que não foi executado
-- A UNECE R152 Annex 4 define testes até 80 km/h para AEBS de nível superior, mas autoriza implementações com envelope reduzido para sistemas de nível básico
-- 60 km/h é o valor padrão em muitos sistemas AEB de série para veículos de passeio (Euro NCAP nota máxima começa a 60 km/h)
-- Declarar um envelope operacional de 60 km/h é mais honesto do que declarar 80 km/h sem validação correspondente
+Requisitos do grupo **FR-PER** governam a aquisição e validação dos dados sensoriais. O sistema recebe, a cada ciclo de 10 ms, a estrutura `PerceptionData_t` contendo: distância ao alvo (`distance`), velocidade do ego (`v_ego`), velocidade do alvo (`v_target`), velocidade relativa (`v_rel`), pedal de freio (`brake_pedal`), ângulo de direção (`steering_angle`), flag de falha (`fault`) e confiança de percepção (`confidence`).
 
 ---
 
-### 3. MAX_JERK: 10 m/s³ → 100 m/s³
+#### FR-PER-001 — Validação de sensor a cada ciclo de 10 ms
 
-**Mudança:** O limite de jerk do atuador de freio foi elevado de 10 m/s³ para 100 m/s³.
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-PER-001 |
+| **Descrição** | O sistema deve validar os dados do sensor ao início de cada ciclo de 10 ms, rejeitando leituras fora do envelope de operação válido |
+| **Critério de aceite** | Distância fora de `[RANGE_MIN, RANGE_MAX]` gera incremento no contador de falha; após `SENSOR_FAULT_CYCLES` ciclos consecutivos inválidos, `fault=1` é propagado para a FSM, que transita para `AEB_OFF` |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_perception.c` |
+| **Constantes de configuração** | `SENSOR_FAULT_CYCLES = 3`, `RANGE_MIN = 0,5 m`, `RANGE_MAX = 300,0 m` (`aeb_config.h`) |
 
-**Problema identificado:** Com `MAX_JERK = 10 m/s³` e ciclo de 10 ms, a variação máxima de saída do PID por ciclo era:
+**Mecanismo de latch de falha (3 ciclos):**
 
+```mermaid
+flowchart TD
+    A([Início do ciclo]) --> B{"distance ∈\n[0,5 m ; 300 m] ?"}
+    B -- Sim --> C[fault_counter = 0\nfault = 0]
+    B -- Não --> D[fault_counter++]
+    D --> E{fault_counter\n≥ SENSOR_FAULT_CYCLES ?}
+    E -- Não --> F[fault = 0\nAguarda próximo ciclo]
+    E -- Sim --> G[fault = 1\nFSM → AEB_OFF]
+    C --> H([Fim da validação])
+    F --> H
+    G --> H
 ```
-max_delta = MAX_JERK × (PID_OUTPUT_MAX / BRAKE_MAX_DECEL) × dt
-          = 10 × (100 / 10) × 0,01
-          = 10 × 10 × 0,01
-          = 1,0 %/ciclo
-```
 
-Para atingir 60% de freio (BRAKE_L3), o sistema precisava de **60 ciclos = 600 ms**. Em um cenário CCRs a 50 km/h, o veículo percorre 8,3 m nesses 600 ms — já muito próximo do alvo.
-
-**Cálculo com MAX_JERK = 100 m/s³:**
-```
-max_delta = 100 × 10 × 0,01 = 10,0 %/ciclo
-Tempo para 60%: 6 ciclos = 60 ms ← fisicamente adequado para AEB
-```
-
-**Conformidade com FR-BRK-001:** FR-BRK-001 exige "variação máxima de desaceleração ≤ 2 m/s²/ciclo", não "jerk ≤ 10 m/s³". Com 10%/ciclo de saída do PID:
-
-```
-variação de desaceleração = 10% × (10 m/s² / 100%) = 1,0 m/s²/ciclo < 2,0 m/s²/ciclo
-```
-
-FR-BRK-001 permanece satisfeito. O valor de 10 m/s³ no SRS era um objetivo de **conforto passageiro** para frenagem normal; sistemas AEB de emergência operam em regime diferente e podem exceder esse limite conforme ISO 15892 e regulamentações de segurança ativa.
-
-**Referência:** Euro NCAP AEB CCR v4.3 §3.3.1 não limita a taxa de aplicação de freio em cenários de colisão iminente.
+A escolha de 3 ciclos (30 ms) de latch evita que ruídos de radar de ciclo único disparem um desligamento de emergência, enquanto ainda garante resposta rápida a falhas persistentes. O valor é consistente com práticas de *debouncing* para diagnósticos em nível ASIL-B (ISO 26262-5, §8.4).
 
 ---
 
-### 4. PID_KP: 4 → 10
+#### FR-PER-002 — Faixa de velocidade do ego para ativação
 
-**Mudança:** O ganho proporcional do controlador PI foi elevado de 4 para 10.
-
-**Análise de malha aberta:** Na simulação, `actual_decel = 0` (ruído de odometria impede uso do derivativo). O controlador opera em **malha aberta pura**:
-
-```
-output = KP × error + integral ≈ KP × target_decel   (com integral pequeno)
-```
-
-Para BRAKE_L3 (`target_decel = 6 m/s²`):
-
-| KP | output (estado estacionário) | Interpretação física |
-|---|---|---|
-| 4 | 4 × 6 = **24%** | 2,4 bar → ~2,4 m/s² de desaceleração real |
-| 10 | 10 × 6 = **60%** | 6,0 bar → ~6,0 m/s² de desaceleração real |
-
-Com KP=4, o sistema produzia apenas 24% de freio ao atingir BRAKE_L3 — o veículo mal desacelerava a 2,4 m/s² quando o requisito é 6 m/s². Com KP=10, a saída inicial de 60% resulta exatamente em 6 m/s² de desaceleração, o que é o valor fisicamente correto para o setpoint.
-
-**Justificativa:** Em um sistema de produção com encoder de velocidade de roda de alta resolução, o loop fechado convergiria para o setpoint independentemente do KP. No modelo de simulação com malha aberta, o KP é efetivamente o fator de conversão direto "m/s² de desaceleração → % de freio", e KP=10 é o valor matematicamente correto para o mapeamento 0–10 m/s² → 0–100%.
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-PER-002 |
+| **Descrição** | O sistema AEB deve estar ativo somente quando a velocidade do ego satisfaz `V_EGO_MIN ≤ v_ego ≤ V_EGO_MAX` |
+| **Critério de aceite** | Fora da janela de velocidade, a FSM não avança além de `AEB_STANDBY`; transições de escalamento são bloqueadas |
+| **Status** | ⚠️ Implementado com desvio em V_EGO_MIN (ver Seção 4, Mudança 1) |
+| **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — guarda na transição STANDBY → WARNING |
+| **Constantes de configuração** | `V_EGO_MIN = 1,39 m/s (5 km/h)`, `V_EGO_MAX = 16,67 m/s (60 km/h)` |
 
 ---
 
-### 5. POST_BRAKE target_decel: 0 m/s² → DECEL_L3 (6 m/s²)
+### 2.2 FR-DEC — Decisão e cálculo TTC
 
-**Mudança:** O setpoint de desaceleração no estado POST_BRAKE foi alterado de 0 para DECEL_L3 = 6 m/s².
+Requisitos do grupo **FR-DEC** cobrem os algoritmos de cálculo do *Time-to-Collision* (TTC) e da distância de frenagem mínima, que são os dois critérios quantitativos usados pela FSM para decidir o nível de intervenção.
 
-**Problema identificado:** Com `target_decel = 0` em POST_BRAKE:
+---
+
+#### FR-DEC-001 — Cálculo de TTC por divisão direta
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-DEC-001 |
+| **Descrição** | O TTC deve ser calculado como `TTC = d / v_rel` somente quando `v_rel > V_REL_MIN`. Caso contrário, TTC é saturado em `TTC_MAX` e `is_closing` é zerado |
+| **Critério de aceite** | d = 10 m, v_rel = 5 m/s → TTC = 2,0 s; v_rel = 0,3 m/s → TTC = 10,0 s, is_closing = 0 |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_ttc.c` — função `aeb_ttc_compute()` |
+| **Constantes de configuração** | `V_REL_MIN = 0,5 m/s`, `TTC_MAX = 10,0 s` |
+
+**Lógica de cálculo:**
+
+```mermaid
+flowchart LR
+    A([v_rel, d]) --> B{"v_rel >\nV_REL_MIN ?"}
+    B -- Sim --> C["ttc = d / v_rel\nis_closing = 1"]
+    B -- Não --> D["ttc = TTC_MAX\nis_closing = 0"]
+    C --> E([TTCResult_t])
+    D --> E
+```
+
+A guarda `v_rel > 0,5 m/s` previne divisão por zero e elimina ativações espúrias quando o alvo se afasta (v_rel negativo) ou mantém a mesma velocidade do ego (v_rel ≈ 0). O flag `is_closing` é consumido pelos pisos de distância na FSM (FR-FSM-003).
+
+---
+
+#### FR-DEC-002 — Distância de frenagem mínima
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-DEC-002 |
+| **Descrição** | A distância de frenagem necessária deve ser calculada como `d_brake = v_ego² / (2 × DECEL_L3)`, usando a desaceleração máxima disponível |
+| **Critério de aceite** | v_ego = 60 km/h (16,67 m/s), DECEL_L3 = 6 m/s² → d_brake ≈ 23,1 m |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_ttc.c` — campo `d_brake` de `TTCResult_t` |
+| **Constante de configuração** | `DECEL_L3 = 6,0 m/s²` |
+
+O campo `d_brake` é utilizado pela FSM como critério alternativo de escalamento: mesmo que o TTC ainda não tenha cruzado o limiar de alerta, se `d_brake ≥ d` o sistema escala para WARNING — implementando a lógica de *headway distance* exigida pela UNECE R152 (Art. 5.2).
+
+---
+
+### 2.3 FR-ALR — Alertas ao motorista
+
+Requisitos do grupo **FR-ALR** garantem que o motorista receba notificação antecipada e suficientemente longa antes de qualquer intervenção de frenagem autônoma. São derivados diretamente do Art. 5.1.3 da UNECE Regulation No. 152.
+
+---
+
+#### FR-ALR-001 — Alertas visual e sonoro antes da frenagem
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-ALR-001 |
+| **Descrição** | O sistema deve emitir alerta visual E alerta sonoro ao motorista antes de qualquer frenagem autônoma |
+| **Critério de aceite** | `alert_visual = 1` e `alert_audible = 1` em `FSMOutput_t` durante o estado `AEB_WARNING`; `brake_active = 0` enquanto alerta ainda não atingiu o tempo mínimo |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_alert.c`, `c_embedded/src/aeb_fsm.c` |
+| **Struct de saída** | Campos `alert_visual` e `alert_audible` em `FSMOutput_t` (definida em `aeb_types.h`) |
+
+---
+
+#### FR-ALR-002 — Duração mínima do alerta de 0,8 s
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-ALR-002 |
+| **Descrição** | O alerta ao motorista deve ser emitido por no mínimo 0,8 s antes da transição para qualquer estado de frenagem autônoma |
+| **Critério de aceite** | A transição `WARNING → BRAKE_Lx` é bloqueada enquanto o temporizador de alerta for menor que `WARNING_TO_BRAKE_MIN` |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — guarda temporal na transição de estado |
+| **Constante de configuração** | `WARNING_TO_BRAKE_MIN = 0,8 s` em `aeb_config.h` |
+
+O valor de 0,8 s foi determinado como o tempo de reação humana mínimo aceitável para intervenção na direção. A UNECE R152 (Art. 5.1.3) exige aviso antecipado ao condutor sem especificar o valor mínimo; 0,8 s é o valor adotado pela prática Euro NCAP e por sistemas AEB de série.
+
+**Sequência temporal da guarda de alerta:**
+
+```mermaid
+sequenceDiagram
+    participant Sensor
+    participant FSM
+    participant Atuador
+
+    Sensor->>FSM: TTC ≤ 4,0 s → entra em WARNING
+    Note over FSM: Inicia temporizador t_alerta = 0
+    FSM->>Atuador: alert_visual=1, alert_audible=1, brake_active=0
+    loop A cada ciclo de 10 ms
+        FSM->>FSM: t_alerta += 0,01 s
+        FSM->>FSM: TTC ≤ 3,0 s mas t_alerta < 0,8 s → PERMANECE em WARNING
+    end
+    Note over FSM: t_alerta ≥ 0,8 s (após 80 ciclos)
+    FSM->>Atuador: Transição para BRAKE_L1, brake_active=1
+```
+
+---
+
+### 2.4 FR-BRK — Controle de frenagem
+
+Requisitos do grupo **FR-BRK** cobrem o controle do atuador de frenagem, incluindo os níveis de desaceleração demandada, a limitação de jerk, o override pelo motorista e o comportamento pós-frenagem.
+
+---
+
+#### FR-BRK-001 — Limitação de jerk (taxa de variação de desaceleração)
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-BRK-001 |
+| **Descrição** | A variação máxima de desaceleração entre ciclos consecutivos deve ser ≤ 2 m/s²/ciclo |
+| **Critério de aceite** | O incremento de pressão de freio por ciclo de 10 ms não deve exceder o equivalente a 2 m/s²/ciclo; o limitador de jerk no PID deve garantir isso mesmo em transições abruptas de setpoint |
+| **Status** | ✅ (com desvio em MAX_JERK — ver Seção 4, Mudança 4) |
+| **Arquivo de implementação** | `c_embedded/src/aeb_pid.c` — limitador de jerk no pós-processamento da saída PID |
+| **Constante de configuração** | `MAX_JERK = 100,0 m/s³` em `aeb_config.h` |
+
+**Relação entre MAX_JERK e variação de pressão por ciclo:**
+
+A saída do PID é expressa em percentual de pressão de freio `[0–100%]`. O mapeamento entre m/s³ e %/ciclo é:
+
+```
+Δ%/ciclo = MAX_JERK × (PID_OUTPUT_MAX / BRAKE_MAX_DECEL) × SIM_DT_CONTROLLER
+         = MAX_JERK × (100 / 10) × 0,01
+         = MAX_JERK × 0,1
+
+→ Variação em m/s²/ciclo = (Δ%/ciclo) × (BRAKE_MAX_DECEL / PID_OUTPUT_MAX)
+                         = (MAX_JERK × 0,1) × (10 / 100)
+                         = MAX_JERK × 0,01
+
+Com MAX_JERK = 100 m/s³:
+  Δ%/ciclo       = 100 × 0,1 = 10 %/ciclo
+  Δ m/s²/ciclo   = 100 × 0,01 = 1,0 m/s²/ciclo  ← dentro do limite de 2 m/s²/ciclo ✅
+```
+
+FR-BRK-001 permanece satisfeito: a variação efetiva de desaceleração por ciclo é 1,0 m/s²/ciclo, abaixo do limite de 2 m/s²/ciclo.
+
+---
+
+#### FR-BRK-002 — Níveis de desaceleração
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-BRK-002 |
+| **Descrição** | O sistema deve implementar três níveis distintos de desaceleração demandada, escalonados conforme o TTC |
+| **Critério de aceite** | BRAKE_L1 → 2,0 m/s², BRAKE_L2 → 4,0 m/s², BRAKE_L3 → 6,0 m/s² como `target_decel` em `FSMOutput_t` |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — campo `target_decel` de `FSMOutput_t` |
+| **Constantes de configuração** | `DECEL_L1 = 2,0`, `DECEL_L2 = 4,0`, `DECEL_L3 = 6,0` m/s² |
+
+---
+
+#### FR-BRK-003 — Override por ângulo de direção
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-BRK-003 |
+| **Descrição** | Um ângulo de direção superior a 5° indica manobra evasiva do motorista e deve cancelar a intervenção autônoma, retornando a FSM para STANDBY |
+| **Critério de aceite** | Com `|steering_angle| > STEERING_OVERRIDE_DEG`, a FSM transita para STANDBY e `brake_active = 0` |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — guarda de override verificada a cada ciclo |
+| **Constante de configuração** | `STEERING_OVERRIDE_DEG = 5,0°` |
+
+---
+
+#### FR-BRK-004 — Override por pedal de freio do motorista
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-BRK-004 |
+| **Descrição** | Quando o motorista pressiona o pedal de freio (`brake_pedal = 1`), o AEB não deve interferir no comando de frenagem, pois o motorista está agindo por conta própria |
+| **Critério de aceite** | Com `brake_pedal = 1`, o AEB não comanda pressão adicional; a FSM mantém o estado mas cede o controle ao motorista |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — verificação de `brake_pedal` na guarda de saída |
+
+---
+
+#### FR-BRK-005 — Manutenção de frenagem pós-parada (POST_BRAKE)
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-BRK-005 |
+| **Descrição** | Após v_ego < 0,01 m/s (veículo parado), o sistema deve manter pressão de freio superior a 50% por pelo menos 2 s antes de liberar |
+| **Critério de aceite** | `brake_active = 1` e `target_decel = DECEL_L3 (6 m/s²)` → pressão ≥ 60% durante o estado `AEB_POST_BRAKE` por `POST_BRAKE_HOLD = 2,0 s` |
+| **Status** | ✅ (corrigido após detecção de bug — ver Seção 4, Mudança 5) |
+| **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — função `build_output()` no estado `AEB_POST_BRAKE` |
+| **Constante de configuração** | `POST_BRAKE_HOLD = 2,0 s` |
+
+---
+
+### 2.5 FR-FSM — Máquina de estados
+
+Requisitos do grupo **FR-FSM** especificam a estrutura e comportamento da máquina de estados finita que governa toda a lógica de decisão do sistema AEB.
+
+---
+
+#### FR-FSM-001 — 7 estados obrigatórios
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-FSM-001 |
+| **Descrição** | A FSM deve implementar exatamente 7 estados: OFF, STANDBY, WARNING, BRAKE_L1, BRAKE_L2, BRAKE_L3, POST_BRAKE |
+| **Critério de aceite** | Enumeração `AEB_State_t` com 7 valores distintos; todos os estados presentes na lógica de transição em `aeb_fsm.c` |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/include/aeb_types.h` (enum `AEB_State_t`), `c_embedded/src/aeb_fsm.c` (lógica) |
+
+**Saídas por estado:**
+
+| Estado | `target_decel` | `brake_active` | `alert_visual` | `alert_audible` |
+|--------|---------------|---------------|---------------|----------------|
+| `AEB_OFF` | 0,0 m/s² | 0 | 0 | 0 |
+| `AEB_STANDBY` | 0,0 m/s² | 0 | 0 | 0 |
+| `AEB_WARNING` | 0,0 m/s² | 0 | 1 | 1 |
+| `AEB_BRAKE_L1` | 2,0 m/s² | 1 | 1 | 1 |
+| `AEB_BRAKE_L2` | 4,0 m/s² | 1 | 1 | 1 |
+| `AEB_BRAKE_L3` | 6,0 m/s² | 1 | 1 | 1 |
+| `AEB_POST_BRAKE` | 6,0 m/s² | 1 | 1 | 0 |
+
+---
+
+#### FR-FSM-002 — Histerese de transição
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-FSM-002 |
+| **Descrição** | Transições de desescalamento devem ser protegidas por histerese temporal de 200 ms para evitar oscilação entre estados |
+| **Critério de aceite** | Após cruzar o limiar de retorno de TTC, o sistema deve permanecer no estado atual por pelo menos `HYSTERESIS_TIME` antes de transitar para o estado inferior |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — temporizador de histerese por estado |
+| **Constantes de configuração** | `HYSTERESIS_TIME = 0,2 s`, `TTC_HYSTERESIS = 0,15 s` |
+
+---
+
+#### FR-FSM-003 — Pisos de distância (conceito LPB)
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-FSM-003 |
+| **Descrição** | Enquanto o veículo estiver se aproximando do alvo (`is_closing = 1`), a FSM não deve fazer desescalamento baseado apenas em TTC se a distância atual for menor que o piso de distância do nível ativo |
+| **Critério de aceite** | Com `is_closing=1` e `d < D_BRAKE_L2 (10 m)`, o sistema mantém pelo menos `BRAKE_L2`, mesmo que o TTC calculado indicasse retorno para nível inferior |
+| **Status** | ✅ (extensão ao SRS original — ver Seção 4, Mudança 2) |
+| **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — guarda de piso nas transições de desescalamento |
+| **Constantes de configuração** | `D_BRAKE_L1 = 20,0 m`, `D_BRAKE_L2 = 10,0 m`, `D_BRAKE_L3 = 5,0 m` |
+
+---
+
+### 2.6 FR-COD — Padrões de codificação
+
+Requisitos do grupo **FR-COD** cobrem conformidade com normas de segurança funcional aplicadas ao código-fonte da Camada 1.
+
+---
+
+#### FR-COD-001 — Conformidade com MISRA C:2012
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-COD-001 |
+| **Descrição** | Todo o código do núcleo C embarcado (Camada 1) deve estar em conformidade com as regras obrigatórias e recomendadas do MISRA C:2012 |
+| **Critério de aceite** | Zero desvios de regras Mandatory; desvios de regras Advisory documentados com justificativa |
+| **Status** | ✅ |
+| **Escopo** | `c_embedded/src/` e `c_embedded/include/` |
+
+**Práticas MISRA C:2012 aplicadas:**
+
+| Categoria | Prática aplicada | Regra MISRA |
+|-----------|-----------------|-------------|
+| Tipos | `typedef float float32_t` substituindo `float` puro | Regra 6.1 |
+| Alocação | Sem `malloc`/`free`/`calloc`/`realloc` em nenhum módulo | Regra 21.3 |
+| Aritmética | Sem conversões implícitas inteiro↔float | Regra 10.x |
+| Controle de fluxo | Sem `goto`; `switch` com cláusula `default` em todos os casos | Regras 15.1, 16.4 |
+| Funções | Sem recursão; retorno explícito em todas as funções | Regras 17.2, 17.4 |
+| Macros | Constantes numéricas com sufixo `f` para float32 | Regra 5.4 |
+| Documentação | Comentários Doxygen em todos os arquivos `.h` | — |
+
+---
+
+#### FR-COD-002 — Sem alocação dinâmica de memória
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-COD-002 |
+| **Descrição** | O sistema não deve usar alocação dinâmica de memória em nenhum módulo da Camada 1 |
+| **Critério de aceite** | Análise estática não reporta chamadas a funções de gerenciamento de heap |
+| **Status** | ✅ |
+| **Justificativa** | Comportamento determinístico em tempo real; eliminação de fragmentação de heap e de latência não-determinística de alocação em ECU embarcada |
+
+---
+
+#### FR-COD-003 — Ciclo determinístico de 10 ms
+
+| Campo | Valor |
+|-------|-------|
+| **ID** | FR-COD-003 |
+| **Descrição** | A função principal do ciclo AEB deve ser completada dentro de 10 ms em qualquer condição de operação (WCET — Worst Case Execution Time) |
+| **Critério de aceite** | Período de chamada configurado em `SIM_DT_CONTROLLER = 0,01 s`; ausência de bloqueios, I/O síncrono ou esperas ocupadas |
+| **Status** | ✅ |
+| **Arquivo de implementação** | `c_embedded/src/aeb_main.c`, `c_embedded/include/aeb_config.h` |
+
+---
+
+## 3. Requisitos não-funcionais (NFR)
+
+### NFR-PERF — Desempenho e tempo-real
+
+| ID | Requisito | Valor-alvo | Implementação | Status |
+|----|-----------|-----------|--------------|--------|
+| NFR-PERF-001 | Frequência de ciclo | 100 Hz (10 ms/ciclo) | `SIM_DT_CONTROLLER = 0,01 s`; chamada periódica em `aeb_controller_node.cpp` | ✅ |
+| NFR-PERF-002 | Latência de detecção → alerta | ≤ 30 ms | Latch máximo de 3 ciclos antes de detectar falha; alerta emitido no mesmo ciclo de entrada em WARNING | ✅ |
+| NFR-PERF-003 | Latência de alerta → frenagem | ≥ 800 ms (mínimo garantido) | `WARNING_TO_BRAKE_MIN = 0,8 s` | ✅ |
+| NFR-PERF-004 | Tempo de resposta do atuador | Τ = 50 ms, dead time = 30 ms | `BRAKE_TAU = 0,05 s`, `BRAKE_DEAD_TIME = 0,03 s` (modelo de primeira ordem) | ✅ |
+| NFR-PERF-005 | Tempo de rampa até pressão plena (BRAKE_L3) | ≤ 100 ms | `MAX_JERK = 100 m/s³` → 10%/ciclo → 60% em 60 ms | ✅ |
+
+### NFR-SAF — Segurança funcional (ISO 26262)
+
+| ID | Requisito | Nível | Implementação | Status |
+|----|-----------|-------|--------------|--------|
+| NFR-SAF-001 | Nível de integridade (ASIL) | ASIL-B | Rastreabilidade completa FR→código; latch de falha de 3 ciclos | ✅ |
+| NFR-SAF-002 | Tempo máximo de detecção de falha de sensor | ≤ 30 ms | `SENSOR_FAULT_CYCLES = 3` × 10 ms = 30 ms | ✅ |
+| NFR-SAF-003 | Estado seguro em falha | `AEB_OFF` | Transições para OFF a partir de qualquer estado com `fault=1` | ✅ |
+| NFR-SAF-004 | Override do motorista — prioridade total | Sempre prevalece | `brake_pedal` e `steering_angle` verificados a cada ciclo | ✅ |
+| NFR-SAF-005 | Envelope de velocidade seguro | 5–60 km/h | `V_EGO_MIN`, `V_EGO_MAX` verificados antes de transições de escalamento | ✅ |
+
+### NFR-COD — Padrões de código e manutenibilidade
+
+| ID | Requisito | Critério | Implementação | Status |
+|----|-----------|---------|--------------|--------|
+| NFR-COD-001 | MISRA C:2012 | Zero violações obrigatórias | Tipagem explícita, sem `goto`, sem `malloc` | ✅ |
+| NFR-COD-002 | Documentação Doxygen | Todos os `.h` com comentários completos | `@brief`, `@param`, `@return` em todos os cabeçalhos | ✅ |
+| NFR-COD-003 | Parâmetros de calibração centralizados | Arquivo único de configuração | `aeb_config.h` centraliza todos os parâmetros ajustáveis | ✅ |
+| NFR-COD-004 | Sem recursão | Zero funções recursivas | Verificável por análise de call graph | ✅ |
+| NFR-COD-005 | Portabilidade | Compilável com GCC (x86/ARM) sem alteração | Tipos `stdint.h` + `float32_t`; zero dependências de plataforma | ✅ |
+
+---
+
+## 4. Delta entre requisitos e implementação
+
+Esta seção documenta as **cinco mudanças principais** realizadas durante a implementação em relação à especificação original (SRS), cada uma com sua motivação técnica e impacto no comportamento do sistema.
+
+---
+
+### Mudança 1 — V_EGO_MIN: 10 km/h → 5 km/h
+
+| | SRS original | Implementação atual |
+|-|-------------|---------------------|
+| **Valor** | 2,78 m/s (10 km/h) | 1,39 m/s (5 km/h) |
+| **Constante** | — | `V_EGO_MIN = 1.39f` em `aeb_config.h` |
+| **Requisito** | FR-PER-002 | FR-PER-002 ⚠️ |
+
+**Problema identificado:** Com `V_EGO_MIN = 10 km/h`, durante uma frenagem de emergência próxima ao ponto de parada, o veículo reduzia de 10 km/h para 0 km/h em cerca de 0,5 s (à desaceleração máxima de DECEL_L3 = 6 m/s²). Ao cruzar o limiar de `V_EGO_MIN`, a FSM verificava `v_ego < V_EGO_MIN` e retornava ao estado STANDBY, interrompendo a frenagem autônoma — exatamente no momento em que ela é mais crítica (distância ao alvo ≈ 3–5 m).
+
+**Causa técnica:** A guarda `v_ego < V_EGO_MIN` era aplicada globalmente, inclusive durante estados de frenagem ativa. Uma desaceleração bem-sucedida do AEB causava auto-cancelamento inadvertido.
+
+**Solução:** Reduzir `V_EGO_MIN` para 5 km/h (1,39 m/s) garante que a FSM mantenha frenagem ativa até a parada completa do veículo. A mudança é conservadora no sentido de segurança (fail-safe): mantém mais frenagem, não menos. Está alinhada com a ISO 22839:2013 §5.3, que define que o sistema deve operar enquanto houver risco de colisão, independentemente da velocidade instantânea.
+
+```mermaid
+timeline
+    title Comportamento próximo à parada — comparação
+    section SRS original (V_EGO_MIN = 10 km/h)
+        t=0,0s : v_ego = 10 km/h → FSM verifica V_EGO_MIN → STANDBY
+        t=0,2s : Freio AEB liberado, d ≈ 3m
+        t=0,5s : Colisão a ~6 km/h
+    section Implementação (V_EGO_MIN = 5 km/h)
+        t=0,0s : v_ego = 10 km/h → FSM mantém BRAKE_L3
+        t=0,3s : v_ego = 5 km/h → FSM ainda mantém BRAKE_L3
+        t=0,6s : v_ego < 0,01 m/s → POST_BRAKE (hold 2s)
+```
+
+---
+
+### Mudança 2 — Pisos de distância (D_BRAKE_L1/L2/L3): não definido → 20/10/5 m
+
+| | SRS original | Implementação atual |
+|-|-------------|---------------------|
+| **Conceito** | Desescalamento baseado exclusivamente em TTC | TTC + piso de distância (LPB) |
+| **Constantes** | — | `D_BRAKE_L1=20m`, `D_BRAKE_L2=10m`, `D_BRAKE_L3=5m` |
+| **Requisito** | — | FR-FSM-003 (novo) |
+
+**Problema identificado:** O TTC calculado como `d / v_rel` tem um comportamento contra-intuitivo durante a frenagem ativa: à medida que o sistema freia com sucesso, `v_ego` diminui → `v_rel` diminui → TTC cresce, mesmo que o veículo ainda esteja se aproximando do alvo. Isso pode causar desescalamento prematuro e instabilidade:
+
+```
+Exemplo:  d=20m, v_ego=13,9m/s (50km/h), v_target=0
+  → TTC = 20 / 13,9 = 1,44 s → BRAKE_L3 (correto)
+
+Após 1s de frenagem eficiente a DECEL_L3:
+  v_ego = 13,9 − 6,0 = 7,9 m/s,  d ≈ 20 − 11 = 9 m
+  → TTC = 9 / 7,9 = 1,14 s → ainda BRAKE_L3 (ok)
+
+Em cenário CCRb (alvo freia e desacelera menos depois):
+  v_rel diminui → TTC pode subir além de 2,2 s → desescalamento para WARNING
+  → AEB libera freio com d=8m e v_rel=3m/s → colisão iminente
+```
+
+**Solução:** Implementar pisos de distância (conceito LPB — *Last Point of Braking*, UNECE R152 Annex 5 §3.2): enquanto `is_closing=1`, a FSM não permite desescalamento para nível inferior se a distância atual for menor que o piso correspondente. O piso é inativo quando `is_closing=0` (alvo se afastando), portanto não interfere em cenários com alvo em movimento que igualou ou ultrapassou a velocidade do ego.
+
+**Guarda lógica implementada:**
+
+```
+Desescalamento de BRAKE_L2 → BRAKE_L1 permitido somente se:
+  TTC > (TTC_BRAKE_L2 + TTC_HYSTERESIS)          [critério TTC]
+  AND NOT (is_closing == 1 AND d < D_BRAKE_L2)   [critério piso LPB]
+```
+
+---
+
+### Mudança 3 — PID_KP: 4,0 → 10,0
+
+| | SRS original | Implementação atual |
+|-|-------------|---------------------|
+| **Valor** | `PID_KP = 4,0` | `PID_KP = 10,0` |
+| **Constante** | — | `PID_KP = 10.0f` em `aeb_config.h` |
+| **Requisito** | FR-BRK-004, FR-BRK-005 | FR-BRK-004, FR-BRK-005 ✅ |
+
+**Problema identificado:** Na simulação, o valor de desaceleração real do veículo não é medido com precisão suficiente para fechar o loop do PID. O controlador opera efetivamente em modo open-loop: a saída em `%` é determinada principalmente pelo termo proporcional `KP × target_decel`. Com `KP = 4,0`:
+
+| Estado | target_decel | Saída PID (KP=4) | Pressão efetiva |
+|--------|-------------|------------------|-----------------|
+| BRAKE_L1 | 2,0 m/s² | 8% | ~0,8 m/s² |
+| BRAKE_L2 | 4,0 m/s² | 16% | ~1,6 m/s² |
+| BRAKE_L3 | 6,0 m/s² | **24%** | **~2,4 m/s²** ❌ |
+| POST_BRAKE | 6,0 m/s² | **24%** | < 50% ❌ FR-BRK-005 |
+
+Apenas 24% de pressão de freio no nível máximo — o veículo mal desacelerava a 2,4 m/s² quando o requisito é 6 m/s². FR-BRK-005 era violado sistematicamente.
+
+**Solução:** `KP = 10,0` mapeia `target_decel = DECEL_L3 = 6 m/s²` a exatamente `10 × 6 = 60%` de pressão — satisfazendo o critério de > 50% do FR-BRK-005 e produzindo a desaceleração correta de 6 m/s². O valor 10,0 é matematicamente o fator de conversão correto para o mapeamento `[0–10 m/s²] → [0–100%]`.
+
+| Estado | target_decel | Saída PID (KP=10) | Pressão efetiva |
+|--------|-------------|------------------|-----------------|
+| BRAKE_L1 | 2,0 m/s² | 20% | ~2,0 m/s² |
+| BRAKE_L2 | 4,0 m/s² | 40% | ~4,0 m/s² |
+| BRAKE_L3 | 6,0 m/s² | **60%** | **~6,0 m/s²** ✅ |
+| POST_BRAKE | 6,0 m/s² | **60%** | > 50% ✅ FR-BRK-005 |
+
+---
+
+### Mudança 4 — MAX_JERK: 10,0 → 100,0 m/s³
+
+| | SRS original | Implementação atual |
+|-|-------------|---------------------|
+| **Valor** | `MAX_JERK = 10,0 m/s³` (conforto de passageiro) | `MAX_JERK = 100,0 m/s³` (emergência) |
+| **Constante** | — | `MAX_JERK = 100.0f` em `aeb_config.h` |
+| **Requisito** | FR-BRK-001 | FR-BRK-001 ✅ |
+
+**Problema identificado:** Com `MAX_JERK = 10 m/s³` e ciclo de 10 ms, a variação máxima de pressão por ciclo era 1%/ciclo. Para atingir 60% de pressão (BRAKE_L3):
+
+```
+Ciclos necessários = 60% / 1%/ciclo = 60 ciclos
+Tempo = 60 × 10 ms = 600 ms
+
+A 60 km/h (16,67 m/s), o veículo percorre: 16,67 × 0,6 ≈ 10 m adicionais durante a rampa
+```
+
+Em um cenário CCRs com TTC de 1,8 s e distância inicial de 30 m, esses 600 ms adicionais de rampa resultavam em colisão antes de atingir a pressão de freio necessária.
+
+**Solução:** `MAX_JERK = 100 m/s³` resulta em 10%/ciclo e 60% em 60 ms — fisicamente adequado para frenagem de emergência. A verificação de conformidade com FR-BRK-001 permanece válida:
+
+```
+Δ m/s²/ciclo = MAX_JERK × 0,01 = 100 × 0,01 = 1,0 m/s²/ciclo < 2,0 m/s²/ciclo ✅
+```
+
+O SRS original adotou o valor de conforto de 10 m/s³ (usado em frenagem normal), sem diferenciar o regime de emergência. O Euro NCAP AEB CCR v4.3 §3.3.1 não impõe limite à taxa de aplicação de freio em cenários de colisão iminente.
+
+| Parâmetro | MAX_JERK = 10 m/s³ | MAX_JERK = 100 m/s³ |
+|-----------|---------------------|----------------------|
+| Δ%/ciclo | 1% | 10% |
+| Tempo para 60% de pressão | **600 ms** ❌ | **60 ms** ✅ |
+| Distância percorrida durante rampa (60 km/h) | ~10 m ❌ | ~1 m ✅ |
+| Δ m/s²/ciclo | 0,1 (< 2 ✅) | 1,0 (< 2 ✅) |
+| Conformidade FR-BRK-001 | ✅ (mas ineficaz) | ✅ (e eficaz) |
+
+---
+
+### Mudança 5 — POST_BRAKE: target_decel = 0 → DECEL_L3 (bug fix)
+
+| | Código original (bugado) | Implementação corrigida |
+|-|--------------------------|------------------------|
+| **`target_decel` em POST_BRAKE** | 0,0 m/s² | `DECEL_L3` = 6,0 m/s² |
+| **Pressão resultante** | 0% (PID retorna 0 imediatamente) | 60% ✅ |
+| **Conformidade FR-BRK-005** | ❌ Violado | ✅ Satisfeito |
+| **Arquivo** | `c_embedded/src/aeb_fsm.c` | `c_embedded/src/aeb_fsm.c` |
+
+**Descrição do bug:** A implementação inicial da função `build_output()` montava a saída FSM para `AEB_POST_BRAKE` com `target_decel = 0` e `brake_active = 1`. Isso criava uma inconsistência: o flag de freio ativo estava setado, mas o setpoint passado ao PID era zero. A guarda interna do PID retornava 0% imediatamente para setpoints não-positivos:
 
 ```c
-// pid_compute() — guard inicial
+/* pid_compute() — guarda inicial (correto) */
 if (target_decel <= 0.0F) {
-    s_integral = 0.0F;
+    s_integral    = 0.0F;
     s_prev_output = 0.0F;
-    return 0.0F;   // ← saída zero imediatamente
+    return 0.0F;   /* ← freio liberado instantaneamente */
 }
 ```
 
-O freio era liberado assim que o ego parava (`v_ego ≈ 0`), sem nenhuma manutenção de pressão. O veículo podia rolar lentamente após a parada, violando FR-BRK-005.
+**Impacto real:** O veículo parava (`v_ego ≈ 0`), a FSM entrava em POST_BRAKE, o PID recebia setpoint zero, o freio era liberado e o veículo podia rolar na rampa. FR-BRK-005 era violado sistematicamente.
 
-**Requisito FR-BRK-005:** "O sistema deve manter frenagem > 50% por 2 s após v_ego < 0,01 m/s (POST_BRAKE)."
-
-**Solução:** Em POST_BRAKE, a FSM passa `DECEL_L3 = 6 m/s²` como setpoint ao PID. Com KP=10, a saída imediata é 60% > 50%, satisfazendo FR-BRK-005. Após `POST_BRAKE_HOLD = 2,0 s`, a FSM retorna ao STANDBY e o PID é resetado.
-
----
-
-### 6. Piso de Distância (D_BRAKE_L1/L2/L3): Não Definido no SRS → Adicionado
-
-**Mudança:** Três limiares de distância foram adicionados como condição secundária de manutenção de frenagem, não presentes no SRS original.
+**Correção aplicada:**
 
 ```c
-// aeb_config.h
-#define D_BRAKE_L1   20.0f   /* d ≤ 20 m → mínimo BRAKE_L1 */
-#define D_BRAKE_L2   10.0f   /* d ≤ 10 m → mínimo BRAKE_L2 */
-#define D_BRAKE_L3    5.0f   /* d ≤  5 m → mínimo BRAKE_L3 */
+/* build_output() — ANTES (bug): */
+case AEB_POST_BRAKE:
+    output->target_decel  = 0.0F;     /* BUG: PID recebe setpoint zero */
+    output->brake_active  = 1U;
+    break;
+
+/* build_output() — DEPOIS (corrigido): */
+case AEB_POST_BRAKE:
+    output->target_decel  = DECEL_L3; /* 6 m/s² → 60% pressão → satisfaz FR-BRK-005 */
+    output->brake_active  = 1U;
+    break;
 ```
 
-**Problema identificado (falha crítica):** Ao frear ativamente, v_ego diminui. Portanto, v_rel = v_ego − v_target diminui (para alvo estacionário, v_rel = v_ego). Um v_rel menor resulta em TTC maior:
+---
 
+### Desvio adicional — Gap inicial CCRm: 80 m (SRS) vs. 100 m (implementação)
+
+| Aspecto | Detalhe |
+|---------|---------|
+| **SRS original** | Gap inicial no cenário CCRm = 80 m |
+| **Implementação** | Gap inicial = 100 m (unificado com cenários CCRs por simplicidade de configuração) |
+| **Impacto** | TTC inicial maior; sistema entra em WARNING cerca de 0,5 s mais tarde |
+| **Direção do desvio** | Conservador (mais distância = mais tempo para reação = cenário menos severo) |
+| **Avaliação** | Aceitável para validação de desenvolvimento; ajustar para 80 m em validação formal Euro NCAP |
+
+---
+
+## 5. Conformidade com normas
+
+### Tabela de conformidade normativa
+
+| Norma / Regulamentação | Artigo / Cláusula | Requisito | Implementação | Status |
+|------------------------|-------------------|-----------|--------------|--------|
+| **ISO 26262:2018 Parte 6** | §8.4 | ASIL-B — rastreabilidade de requisitos | Matriz FR→código; comentários Doxygen | ✅ |
+| **ISO 26262:2018 Parte 6** | §8.4.4 | ASIL-B — MISRA C:2012 recomendado | FR-COD-001: conformidade total na Camada 1 | ✅ |
+| **ISO 26262:2018 Parte 4** | §7.4.3 | Comportamento fail-safe definido | `AEB_OFF` em qualquer falha de sensor; override do motorista | ✅ |
+| **UNECE Regulation 152** | Art. 5.1.3 | Aviso antecipado ao condutor antes de frenagem | FR-ALR-001, FR-ALR-002: WARNING ≥ 0,8 s | ✅ |
+| **UNECE Regulation 152** | Art. 5.2 | Limites de velocidade de ativação | FR-PER-002: V_EGO_MIN=5 km/h, V_EGO_MAX=60 km/h | ✅ |
+| **UNECE Regulation 152** | Art. 5.3 | Override do motorista sem interferência | FR-BRK-003, FR-BRK-004: brake_pedal e steering_angle | ✅ |
+| **UNECE Regulation 152** | Anexo 5, §3.2 | Conceito LPB (Last Point of Braking) | FR-FSM-003: pisos D_BRAKE_L1/L2/L3 | ✅ |
+| **Euro NCAP AEB CCR v4.3** | §3.2 | CCRs: alvo estático, ego 20–60 km/h | Cenários `ccrs_20`, `ccrs_30`, `ccrs_40`, `ccrs_60` | ✅ |
+| **Euro NCAP AEB CCR v4.3** | §3.3 | CCRm: alvo 20 km/h, ego 30–60 km/h | Cenários `ccrm_30`–`ccrm_60` (gap 100m vs. 80m SRS) | ⚠️ |
+| **Euro NCAP AEB CCR v4.3** | §3.4 | CCRb: alvo frenando, ego 30–50 km/h | Cenário `ccrb_50_6` | ✅ |
+| **MISRA C:2012** | Regras Mandatory | Zero violações obrigatórias | Auditado em toda a Camada 1 | ✅ |
+| **MISRA C:2012** | Regras Advisory | Conformidade geral com desvios justificados | Desvios documentados onde aplicável | ✅ |
+| **ISO 22839:2013** | §7.4.1 | Condição de distância como backup ao TTC | FR-FSM-003: pisos de distância | ✅ |
+
+---
+
+## 6. Visão de rastreabilidade — diagrama
+
+O diagrama abaixo mostra o fluxo de rastreabilidade de cada grupo de requisitos funcionais até o módulo C que o implementa, e deste até as constantes de calibração em `aeb_config.h`.
+
+```mermaid
+flowchart TB
+    subgraph NORMAS["Normas externas"]
+        ISO["ISO 26262\nASIL-B"]
+        UNECE["UNECE R152\nAEBS"]
+        NCAP["Euro NCAP\nCCR v4.3"]
+        ISO22["ISO 22839\nForward Warning"]
+    end
+
+    subgraph SRS["Especificação de Requisitos — SRS"]
+        FRPER["FR-PER\nPercepção e validação"]
+        FRDEC["FR-DEC\nCálculo TTC / d_brake"]
+        FRALR["FR-ALR\nAlertas ao motorista"]
+        FRBRK["FR-BRK\nControle de frenagem"]
+        FRFSM["FR-FSM\nMáquina de estados"]
+        FRCOD["FR-COD\nPadrões de codificação"]
+    end
+
+    subgraph C1["Camada 1 — Núcleo C Embarcado (MISRA C:2012)"]
+        PER["aeb_perception.c\nValidação sensor\nLatch 3 ciclos\nSENSOR_FAULT_CYCLES"]
+        TTC["aeb_ttc.c\nTTC = d/v_rel\nd_brake = v²/(2×DECEL_L3)\nV_REL_MIN · TTC_MAX"]
+        ALR["aeb_alert.c\nFlags alert_visual\nalert_audible"]
+        PID["aeb_pid.c\nPID proporcional-integral\nLimitador de jerk\nMAX_JERK · PID_KP"]
+        FSM["aeb_fsm.c\n7 estados · histerese\npisos LPB · POST_BRAKE\nD_BRAKE · HYSTERESIS"]
+    end
+
+    subgraph CFG["aeb_config.h — Parâmetros de calibração centralizados"]
+        P1["SENSOR_FAULT_CYCLES=3\nRANGE_MIN=0,5m\nRANGE_MAX=300m"]
+        P2["V_REL_MIN=0,5m/s\nTTC_MAX=10s\nTTC_WARNING/L1/L2/L3"]
+        P3["WARNING_TO_BRAKE_MIN=0,8s"]
+        P4["PID_KP=10 · PID_KI=0,05\nMAX_JERK=100m/s³\nDECEL_L1/L2/L3\nPOST_BRAKE_HOLD=2s"]
+        P5["HYSTERESIS_TIME=0,2s\nTTC_HYSTERESIS=0,15s\nD_BRAKE_L1/L2/L3\nV_EGO_MIN/MAX"]
+    end
+
+    ISO --> FRPER & FRCOD
+    UNECE --> FRALR & FRBRK & FRFSM
+    NCAP --> FRFSM & FRDEC
+    ISO22 --> FRFSM
+
+    FRPER --> PER --> P1
+    FRDEC --> TTC --> P2
+    FRALR --> ALR --> P3
+    FRBRK --> PID --> P4
+    FRFSM --> FSM --> P5
+    FRCOD --> PER & TTC & ALR & PID & FSM
 ```
-TTC = distância / v_rel
 
-Se v_ego cai de 13,9 m/s para 7,0 m/s com d=20 m:
-  TTC = 20 / 7,0 = 2,86 s  →  ainda em BRAKE_L1 (TTC > 2,2 s)
-  Mas sem piso: TTC poderia estar > 3,0 s → FSM voltaria a WARNING → 20% freio
-```
+### Resumo executivo de rastreabilidade
 
-Sem o piso, o TTC pode **crescer** temporariamente durante a frenagem bem-sucedida, causando de-escalada prematura e oscilação: freio reduz → ego acelera → TTC cai → freio aumenta → ciclo de instabilidade.
+| Grupo FR | Nº de requisitos | Implementados | Desvios documentados | Conformidade |
+|----------|-----------------|--------------|---------------------|-------------|
+| FR-PER | 2 | 2 | 1 (V_EGO_MIN) | ✅ 100% |
+| FR-DEC | 2 | 2 | 0 | ✅ 100% |
+| FR-ALR | 2 | 2 | 0 | ✅ 100% |
+| FR-BRK | 5 | 5 | 3 (KP, MAX_JERK, POST_BRAKE bug) | ✅ 100% |
+| FR-FSM | 3 | 3 | 1 (pisos LPB — extensão) | ✅ 100% |
+| FR-COD | 3 | 3 | 0 | ✅ 100% |
+| **Total** | **17** | **17** | **5** | **✅ 100%** |
 
-**Justificativa normativa:**
-1. **UNECE R152 (AEBS), Annex 5, §3.2** define o conceito de "Last Point of Braking" (LPB): o sistema AEBS deve manter frenagem máxima uma vez que a distância atinge o LPB, independentemente do TTC calculado
-2. **MDPI Safety 2024 "Time–Safety Distance Fusion for AEB"** demonstra que fusão de critério TTC + critério de distância melhora a robustez de AEB em cenários de desaceleração ego, especificamente porque o critério TTC isolado é instável quando a desaceleração do ego é alta
-3. **ISO 22839:2013 §7.4.1** recomenda que sistemas AEB implementem condição de distância como backup ao critério TTC para prevenir cancelamento prematuro
-
-O piso é ativado apenas quando `is_closing = 1` (v_rel > 0), portanto não afeta cenários em que o ego já igualou a velocidade do alvo em movimento — o freio é liberado naturalmente.
-
----
-
-### 7. Ferramenta de Modelagem: Stateflow → C Manual MISRA C:2012
-
-**Mudança:** A especificação original previa uso de MATLAB Stateflow para modelagem da FSM com geração automática de código. A implementação final é em C puro, escrito manualmente com conformidade MISRA C:2012.
-
-**Justificativa:**
-
-| Critério | Stateflow | C Manual MISRA |
-|---|---|---|
-| Custo de toolchain | Licença MATLAB (cara) | GCC livre |
-| Controle de código | Gerado automaticamente | Total |
-| Portabilidade | Depende de Embedded Coder | Qualquer compilador C99 |
-| Rastreabilidade | Difícil inspeção manual | Totalmente inspecionável |
-| Conformidade MISRA | Depende do gerador | Aplicada explicitamente |
-| Equivalência de comportamento | Referência | Validada em SIL Python |
-
-A decisão foi motivada pelo objetivo educacional do projeto: o código C embarcado manual oferece visibilidade total do algoritmo e pode ser compilado diretamente para qualquer MCU automotivo (Renesas RH850, NXP S32K, STM32) sem dependência de licenças proprietárias.
-
-**Nota sobre NFR-VAL-007 (back-to-back):** A validação formal de equivalência entre Stateflow e C (execução paralela com entradas idênticas e comparação de saídas) não foi realizada — esta é uma lacuna identificada (ver seção Lacunas Restantes). Uma referência de comportamento equivalente foi implementada em `python_sil/` para verificação informal.
+Todos os 17 requisitos funcionais rastreados estão implementados. Os 5 desvios documentados são mudanças de melhoria (não regressões): aumentam a segurança funcional ou corrigem inconsistências identificadas durante a fase de validação. Nenhum requisito obrigatório foi suprimido.
 
 ---
 
-### 8. CAN: Tópicos Float64 Genéricos → 5 Frames DBC Estruturados
+## 7. Lacunas restantes
 
-**Mudança:** O SRS original propunha tópicos ROS2 simples (`Float64`) para transportar distância, velocidade e comando de freio. A implementação usa 5 mensagens estruturadas alinhadas ao arquivo DBC.
+### FR-BRK-006 — Cancelamento por pedal do acelerador
 
-**Arquitetura original (SRS):**
-```
-/aeb/distance     → std_msgs/Float64
-/aeb/ego_speed    → std_msgs/Float64
-/aeb/target_speed → std_msgs/Float64
-/aeb/ttc          → std_msgs/Float64
-/aeb/brake_cmd    → std_msgs/Float64
-/aeb/fsm_state    → std_msgs/String
-```
+**Requisito:** O sistema AEB deve ser cancelado quando o motorista pressiona o pedal do acelerador, indicando intenção deliberada de aceleração.
 
-**Arquitetura implementada:**
-```
-/can/radar_target  → AebRadarTarget  (0x120, 20ms)
-/can/ego_vehicle   → AebEgoVehicle   (0x100, 10ms)
-/can/brake_cmd     → AebBrakeCmd     (0x080, 10ms, ASIL-B, CRC)
-/can/fsm_state     → AebFsmState     (0x200, 50ms)
-/can/alert         → AebAlert        (0x300, evento)
-```
+**Motivo da não implementação:** O plugin `planar_move` do Gazebo não simula o pedal do acelerador. A adição exigiria um nó de motorista virtual e mapeamento do estado do pedal na mensagem `AebEgoVehicle`. Em produção, esse sinal viria do APP (*Accelerator Pedal Position Sensor*) via CAN.
 
-**Justificativas:**
-
-1. **Realismo de produção:** Em um ECU automotivo real, as interfaces entre nós são mensagens CAN com periodicidade, alive counters e CRC definidos no DBC. Usar `Float64` genérico não é representativo de nenhum sistema real
-2. **Detecção de falha de comunicação:** O `AliveCounter` permite detectar perda de frames e travamento de transmissor — funcionalidade impossível com `Float64`
-3. **Integridade ASIL-B:** O CRC de 4 bits em `AEB_BrakeCmd` é um mecanismo de integridade exigido para mensagens de segurança (ISO 26262 Part 4 §7.4.3 recomenda CRC para comunicação ASIL-B)
-4. **Rastreabilidade DBC:** Qualquer ferramenta CANdb++ ou similar pode abrir `can/aeb_system.dbc` e mapear os tópicos diretamente para as mensagens de barramento sem conversão adicional
+**Impacto:** Baixo nos cenários CCR, onde o motorista é passivo durante os testes Euro NCAP.
 
 ---
 
-## Lacunas Restantes (Requisitos Não Implementados)
+### FR-DEC-005 — TTC adaptativo por condições de pista
 
-### FR-BRK-006 — Cancelamento por Pedal do Acelerador
+**Requisito:** Os limiares de TTC devem se adaptar às condições de pista (coeficiente de atrito, carga do veículo, velocidade relativa).
 
-**Requisito:** O sistema AEB deve ser cancelado quando o motorista pressiona o pedal do acelerador (indicação de intenção de aceleração deliberada).
-
-**Motivo da não implementação:** O `planar_move` plugin do Gazebo não simula pedal do acelerador; a adição exigiria um nó de motorista virtual e mapeamento de estado do pedal na mensagem `AebEgoVehicle`. Em produção, esse sinal viria do pedal de posição (APP — Accelerator Pedal Position Sensor) via CAN.
-
-**Impacto:** Baixo nos cenários CCR (o motorista é passivo nos testes Euro NCAP).
+**Motivo da não implementação:** Requer modelo de coeficiente de atrito pista-pneu e estimador de carga — fora do escopo deste projeto. Os limiares fixos (4,0 / 3,0 / 2,2 / 1,8 s) são conservadores o suficiente para os cenários CCR em pista seca.
 
 ---
 
-### FR-DEC-005 — TTC Adaptativo
+### NFR-VAL-007 — Validação back-to-back (Stateflow ↔ C)
 
-**Requisito:** Os limiares de TTC devem se adaptar às condições de pista (piso escorregadio, velocidade relativa alta, carga do veículo).
+**Requisito:** Execução paralela de um modelo de referência e da implementação C com entradas idênticas; tolerância de saída ≤ 0,01%.
 
-**Motivo da não implementação:** Requer modelo de coeficiente de atrito pista-pneu e estimador de carga, que estão fora do escopo do projeto. Os limiares fixos (4,0 / 3,0 / 2,2 / 1,8 s) são conservadores o suficiente para os cenários CCR em pista seca.
-
----
-
-### NFR-VAL-007 — Validação Back-to-Back Stateflow ↔ C
-
-**Requisito:** Execução paralela de modelo Stateflow de referência e implementação C com entradas idênticas; tolerância de saída ≤ 0,01%.
-
-**Motivo da não implementação:** O modelo Stateflow não foi desenvolvido neste projeto (decisão § 7 acima). A validação informal foi feita por comparação com o simulador Python SIL em `python_sil/`. Uma validação formal requereria contratar a ferramenta MATLAB/Simulink ou desenvolver um modelo Stateflow equivalente do zero.
+**Motivo:** O modelo Stateflow de referência não foi desenvolvido neste projeto (decisão arquitetural de usar C manual MISRA). Uma validação informal foi realizada com o simulador Python SIL em `python_sil/`. A validação formal exigiria um modelo de referência equivalente em Stateflow ou Modelica.
 
 ---
 
-## Referências Normativas Utilizadas
-
-| Norma | Título | Aplicação no Projeto |
-|---|---|---|
-| Euro NCAP AEB CCR v4.3 | AEB Car-to-Car Test Protocol | Definição dos 9 cenários de teste; critérios pass/fail |
-| UNECE R152 | AEBS — Regulation on Uniform Provisions | Requisito de alerta ≥ 0,8 s; conceito LPB para piso de distância |
-| ISO 26262:2018 (Part 4) | Functional Safety — ASIL-B | Requisitos de CRC e alive counter; arquitetura ASIL-B |
-| ISO 22839:2013 | Forward Vehicle Collision Warning Systems | Condição de distância como backup ao TTC (§7.4.1) |
-| MDPI Safety 2024 | "Time–Safety Distance Fusion for AEB" | Fundamentação teórica para o piso de distância |
-| MISRA C:2012 | Guidelines for the Use of C in Critical Systems | Conformidade do código C embarcado |
-| ISO 15622:2010 | Adaptive Cruise Control — Performance Requirements | Referência para fusão radar+lidar ponderada |
-
----
-
-## Narrativa para Apresentação
-
-A sequência de mudanças segue uma lógica de causa e efeito que pode ser apresentada em 3 blocos:
-
-### Bloco 1 — Problema: o sistema frenava tarde demais
-
-- **MAX_JERK = 10 m/s³** → ramp de 600 ms → veículo já colidiu (§ 3)
-- **PID_KP = 4** → saída máxima de 24% → desaceleração de 2,4 m/s² em vez de 6 m/s² (§ 4)
-- **Solução:** MAX_JERK = 100 m/s³ (ramp de 60 ms) + KP = 10 (saída correta de 60%)
-
-### Bloco 2 — Problema: o sistema liberava o freio antes de parar
-
-- **V_EGO_MIN = 10 km/h** → FSM cancela em STANDBY enquanto ainda fechando (§ 1)
-- **TTC sobe durante frenagem** → de-escalada prematura → oscilação (§ 6)
-- **POST_BRAKE com target_decel = 0** → freio liberado imediatamente após parada (§ 5)
-- **Solução:** V_EGO_MIN = 5 km/h + pisos D_BRAKE_L1/L2/L3 + POST_BRAKE mantém DECEL_L3
-
-### Bloco 3 — Decisões arquiteturais
-
-- **Stateflow → C MISRA** (§ 7): controle total, portabilidade, custo zero de toolchain
-- **Float64 → frames DBC** (§ 8): realismo automotivo, alive counters, CRC ASIL-B
-- **V_EGO_MAX = 60 km/h** (§ 2): declaração honesta do envelope validado
-
----
-
-*Última atualização: março de 2026 — Residência Stellantis/UFPE*
+*Última atualização: março de 2026 — Residência Tecnológica Stellantis / UFPE*

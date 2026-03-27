@@ -49,6 +49,8 @@ A Camada 1 consiste em **6 módulos C** com interfaces bem definidas:
 | `aeb_fsm` | `src/aeb_fsm.c` | Máquina de estados (7 estados), escalonamento de ameaça |
 | `aeb_pid` | `src/aeb_pid.c` | Controlador PID com anti-windup e limitador de jerk |
 | `aeb_alert` | `src/aeb_alert.c` | Geração de comandos de alerta visual e sonoro |
+| `aeb_can` | `src/aeb_can.c` | Codificação/decodificação de frames CAN (8 bytes, escala ×100) e detecção de timeout |
+| `aeb_uds` | `src/aeb_uds.c` | Diagnósticos ISO 14229: sessões, DTCs, ReadDID, WriteDataByIdentifier, Security Access |
 | `aeb_main` | `src/aeb_main.c` | Orquestrador: `aeb_init()` e `aeb_cycle_10ms()` |
 
 ### Interfaces de entrada e saída
@@ -234,7 +236,7 @@ O diagrama abaixo mostra o pipeline completo desde o sensor Gazebo até o comand
   ║  4. aeb_pid_update()                 ║
   ║     ├─ error = target - actual_decel ║
   ║     ├─ PI com anti-windup            ║
-  ║     ├─ jerk limiter (10%/ciclo max)  ║
+  ║     ├─ jerk limiter (1%/ciclo = 6 m/s³, max 10 m/s³) ║
   ║     └─ saída: brake_pct [0-100]      ║
   ║                                      ║
   ║  5. aeb_alert_update()               ║

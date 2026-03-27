@@ -184,7 +184,7 @@ BO_ 768 AEB_Alert: 2 AEB_Controller
 | `can_id` | — | `0x300` |
 | `alert_type` | `AlertType` | 0=NONE, 1=VISUAL, 2=AUDIBLE, 3=BOTH |
 | `alert_active` | `AlertActive` | `True` se visual ou sonoro ativo |
-| `visual_active` | — | Ativo em WARNING, BRAKE_L1/L2/L3, POST_BRAKE |
+| `visual_active` | — | Ativo em WARNING, BRAKE_L1/L2/L3 (não em POST_BRAKE — FR-ALR-005 removido SRS v3) |
 | `audible_active` | — | Ativo em WARNING, BRAKE_L1/L2/L3 (não em POST_BRAKE) |
 | `buzzer_cmd` | `BuzzerCmd` | Padrão de buzzer (ver tabela abaixo) |
 

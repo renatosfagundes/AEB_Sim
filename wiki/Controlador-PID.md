@@ -300,11 +300,9 @@ Com apenas 1%/ciclo de variação máxima, o tempo para atingir 60% de freio era
 t = 60% / (1%/ciclo × 100 ciclos/s) = 60 / 1 = 60 s
 ```
 
-**60 segundos para atingir pressão máxima** — completamente inaceitável. Em um cenário de TTC = 1,8 s, o freio chegaria a apenas ~1,8%×100 = 1,8% de pressão antes da colisão.
+**60 segundos para atingir pressão máxima** — completamente inaceitável para um cenário de TTC = 1,8 s.
 
-Diagnóstico: pressão de freio crescendo linearmente a ~1%/ciclo, nunca atingindo regime para evitar colisão.
-
-**Correção:** MAX_JERK elevado para 100 %/s, resultando em delta_max = 10 %/ciclo e tempo de rampa de apenas 60 ms para 60%.
+**Correção:** MAX_JERK elevado para 100 %/s, resultando em delta_max = 10 %/ciclo e tempo de rampa de 60 ms para 60%.
 
 ### Resumo do histórico de tuning
 
@@ -313,6 +311,19 @@ Diagnóstico: pressão de freio crescendo linearmente a ~1%/ciclo, nunca atingin
 | `KP` | 4.0 | 24% de freio para L3 → desaceleração insuficiente | **10.0** | 60% de freio para L3 → parada antes da colisão |
 | `MAX_JERK` | 10 %/s | 1%/ciclo → 60 s para pressão máxima | **100 %/s** | 10%/ciclo → 60 ms para pressão máxima |
 | `KI` | 0.05 | Adequado; sem alteração | 0.05 | Integrador complementar, sem windup em 5 s |
+
+### ⚠️ Revisão SRS v3 — FR-BRK-004: jerk ≤ 10 m/s³
+
+O SRS v3 (correção de revisão Excel) tightened o limite de jerk de 100 m/s³ para **10 m/s³**. Impacto:
+
+| Implementação | delta\_max | Jerk efetivo | Conformidade com 10 m/s³ |
+|---|---|---|---|
+| **C code** (`MAX_JERK=100`, `BRAKE_MAX_DECEL=10`) | 10 %/ciclo | 100 m/s³ (ref. 10 m/s²) / 60 m/s³ (ref. 6 m/s²) | ❌ Excede |
+| **Simulink model** (`max_delta=1%`) | 1 %/ciclo | 6 m/s³ | ✅ OK |
+
+**Ação necessária no código C:** reduzir `MAX_JERK` para `10 %/s` E atualizar `BRAKE_MAX_DECEL` para `6.0f` (DECEL\_L3). O resultado seria delta\_max = 10 × (100/6) × 0.01 ≈ 1.67 %/ciclo → jerk = 10 m/s³ (no limite).
+
+Alternativamente, manter `MAX_JERK = 6 %/s` com `BRAKE_MAX_DECEL = 6.0f`: delta\_max = 1 %/ciclo → 6 m/s³ (idêntico ao Simulink, com 40% de margem).
 
 ---
 

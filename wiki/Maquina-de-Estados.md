@@ -16,24 +16,26 @@ A Máquina de Estados Finita (*Finite State Machine* — FSM) do AEB é implemen
 
 Todas as variáveis de temporização (histerese, WARNING_TO_BRAKE, POST_BRAKE) são mantidas como variáveis estáticas acumuladas em ciclos de 10 ms (dt = 0,01 s), sem uso de timers externos — compatível com ambiente bare-metal sem RTOS.
 
+Uma versão Stateflow/Simulink fiel ao código C está disponível em `AEB_Stateflow_build.m`.
+
 ---
 
 ## Tabela completa de estados
 
 | Estado | ID | Condição de entrada | `target_decel` [m/s²] | `brake_active` | `alert_visual` | `alert_audible` |
 |--------|:--:|---------------------|:---------------------:|:--------------:|:--------------:|:---------------:|
-| `OFF` | 0 | Fault ativo, ou sistema inibido por chave lógica | 0.0 | 0 | 0 | 0 |
-| `STANDBY` | 1 | Sistema ativo, v_ego ∈ [1,39; 16,67] m/s, sem ameaça | 0.0 | 0 | 0 | 0 |
-| `WARNING_L1` | 2 | TTC ≤ 4,0 s e `is_closing = 1` | 0.0 | 0 | 1 | 0 |
-| `WARNING_L2` | 3 | TTC ≤ 3,0 s e `is_closing = 1` | 0.0 | 0 | 1 | 1 |
-| `BRAKE_L1` | 4 | TTC ≤ 2,2 s **e** d ≤ 20 m **e** `warning_timer ≥ 0,8 s` | 2.0 | 1 | 1 | 1 |
-| `BRAKE_L2` | 5 | TTC ≤ 1,8 s **e** d ≤ 10 m | 4.0 (ou 6.0 se d ≤ 5 m) | 1 | 1 | 1 |
-| `POST_BRAKE` | 6 | v_ego < 0,01 m/s durante frenagem ativa | 6.0 | 1 | 1 | 0 |
+| `OFF` | 0 | Fault ativo, ou sistema inibido por chave/InfoCenter | 0.0 | 0 | 0 | 0 |
+| `STANDBY` | 1 | Sistema ativo, v_ego in [2,78; 16,67] m/s (10–60 km/h), sem ameaça | 0.0 | 0 | 0 | 0 |
+| `WARNING` | 2 | TTC <= 4,0 s e `is_closing = 1` (toda ameaça passa por aqui) | 0.0 | 0 | 1 | 1 |
+| `BRAKE_L1` | 3 | TTC <= 3,0 s **e** `warning_timer >= 0,8 s` | 2.0 | 1 | 1 | 1 |
+| `BRAKE_L2` | 4 | TTC <= 2,2 s | 4.0 | 1 | 1 | 1 |
+| `BRAKE_L3` | 5 | TTC <= 1,8 s **ou** d_brake >= distance | 6.0 | 1 | 1 | 1 |
+| `POST_BRAKE` | 6 | v_ego < 0,01 m/s durante frenagem ativa | 6.0 | 1 | 0 | 0 |
 
 **Notas:**
-- `target_decel` em `BRAKE_L2` é **4,0 m/s²** quando apenas TTC ≤ 1,8 s e d ≤ 10 m; sobe para **6,0 m/s²** adicionalmente quando d ≤ 5 m (distance floor L3 ativo)
-- `POST_BRAKE` mantém `target_decel = 6,0 m/s²` por toda a duração de 2 s, garantindo que o veículo permaneça parado mesmo em inclinações suaves
-- O alerta sonoro em `POST_BRAKE` é desligado (`alert_audible = 0`) pois o veículo já está parado — alerta residual seria inconfortável e sem função de segurança
+- Toda ameaça detectada em `STANDBY` entra primeiro em `WARNING` — mesmo que o TTC já esteja abaixo dos limiares de frenagem. Escalação para BRAKE só acontece após o mínimo de 0,8 s em WARNING (FR-ALR-003).
+- `POST_BRAKE` mantém `target_decel = 6,0 m/s²` por toda a duração de 2 s, garantindo que o veículo permaneça parado mesmo em inclinações suaves.
+- Em `POST_BRAKE`, **ambos os alertas são desligados** (`alert_visual = 0`, `alert_audible = 0`) — FR-ALR-005 (alerta visual em POST\_BRAKE) foi removido no SRS v3. O foco desta fase é manter o freio aplicado, não emitir alertas.
 
 ---
 
@@ -41,199 +43,192 @@ Todas as variáveis de temporização (histerese, WARNING_TO_BRAKE, POST_BRAKE) 
 
 ### Escalação (aumento de severidade)
 
-As transições de escalação seguem a hierarquia determinada por `evaluate_threat()`. Para cada ciclo, a ameaça é reavaliada e a transição ocorre **imediatamente** (sem atraso), exceto quando o `WARNING_TO_BRAKE_MIN` está em jogo:
+As transições de escalação seguem a hierarquia determinada por `evaluate_threat()` em `aeb_fsm.c`. A ameaça é reavaliada a cada ciclo e a escalação ocorre **imediatamente** (sem debounce), com uma exceção fundamental: toda ameaça partindo de STANDBY **obrigatoriamente** entra em WARNING primeiro.
 
 ```
-OFF ──[fault_cleared + v_ego in range]──► STANDBY
+OFF ──[~fault]──> STANDBY
 
-STANDBY ──[TTC ≤ 4,0 s + is_closing]──► WARNING_L1
+STANDBY ──[desired >= WARNING + is_closing]──> WARNING
+   (qualquer TTC <= 4.0 s OU d_brake >= distance OU distance <= D_BRAKE_L1)
 
-WARNING_L1 ──[TTC ≤ 3,0 s]──► WARNING_L2
+WARNING ──[desired >= BRAKE_L1 + warning_timer >= 0.8 s]──> BRAKE_L1
+WARNING ──[desired >= BRAKE_L2 + warning_timer >= 0.8 s]──> BRAKE_L2
+WARNING ──[desired = BRAKE_L3 + warning_timer >= 0.8 s]──> BRAKE_L3
 
-WARNING_L2 ──[TTC ≤ 2,2 s + d ≤ 20 m + warning_timer ≥ 0,8 s]──► BRAKE_L1
-WARNING_L1 ──[TTC ≤ 2,2 s + d ≤ 20 m + warning_timer ≥ 0,8 s]──► BRAKE_L1
+BRAKE_L1 ──[desired = BRAKE_L2 ou BRAKE_L3]──> (desired)   imediato
+BRAKE_L2 ──[desired = BRAKE_L3]──> BRAKE_L3                imediato
 
-BRAKE_L1 ──[TTC ≤ 1,8 s + d ≤ 10 m]──► BRAKE_L2
+BRAKE_L1 ──[v_ego < 0.01 m/s]──> POST_BRAKE
+BRAKE_L2 ──[v_ego < 0.01 m/s]──> POST_BRAKE
+BRAKE_L3 ──[v_ego < 0.01 m/s]──> POST_BRAKE
 
-BRAKE_L1 ──[v_ego < 0,01 m/s]──► POST_BRAKE
-BRAKE_L2 ──[v_ego < 0,01 m/s]──► POST_BRAKE
-
-POST_BRAKE ──[timer ≥ 2,0 s]──► STANDBY
+POST_BRAKE ──[timer >= 2.0 s]──> STANDBY
 ```
 
-A transição direta `WARNING → BRAKE_L1` sem passar por WARNING_L2 é possível se o TTC cair abruptamente (ex.: freada súbita do veículo à frente), desde que o `warning_timer` já acumule 0,8 s em qualquer estado de WARNING.
+**Observação crítica:** A transição STANDBY -> WARNING -> BRAKE garante que o motorista sempre receba alertas visuais e sonoros **antes** de qualquer frenagem autônoma, mesmo em cenários de TTC muito baixo (ex.: cut-in súbito).
 
 ### De-escalação (redução de severidade)
 
-De-escalações exigem que a condição de ameaça reduzida persista por `AEB_HYSTERESIS_TIME = 0,2 s` antes de ser aplicada:
+De-escalações exigem que a condição de ameaça reduzida persista por `HYSTERESIS_TIME = 0,2 s` antes de ser aplicada. A de-escalação é **sempre de um nível por vez** (single-step), conforme implementado em `aeb_fsm.c`:
 
 ```
-BRAKE_L2 ──[TTC > 2,0 s por 0,2 s]──► BRAKE_L1
-BRAKE_L1 ──[TTC > 2,5 s por 0,2 s]──► WARNING_L2
-WARNING_L2 ──[TTC > 3,5 s por 0,2 s]──► WARNING_L1
-WARNING_L1 ──[TTC > 4,5 s por 0,2 s OU !is_closing]──► STANDBY
+BRAKE_L3 ──[desired = BRAKE_L2 x 0.2 s]──> BRAKE_L2
+BRAKE_L3 ──[desired = BRAKE_L1 x 0.2 s]──> BRAKE_L1
+BRAKE_L3 ──[desired <= WARNING  x 0.2 s]──> POST_BRAKE
+
+BRAKE_L2 ──[desired < BRAKE_L2 x 0.2 s]──> BRAKE_L1
+
+BRAKE_L1 ──[desired < BRAKE_L1 x 0.2 s]──> WARNING
+
+WARNING  ──[desired = STANDBY  x 0.2 s]──> STANDBY
 ```
 
-Os limiares de de-escalação são **propositalmente mais altos** que os limiares de escalação correspondentes, criando uma zona de histerese assimétrica. Exemplos:
+**Por que single-step?** Evita transições abruptas de BRAKE_L3 diretamente para STANDBY — o motorista sente a redução gradual de frenagem, o que é mais seguro e confortável.
 
-| Escalação ativa em | De-escalação ativa em | Zona de histerese |
-|:------------------:|:--------------------:|:-----------------:|
-| TTC ≤ 4,0 s (W_L1) | TTC > 4,5 s (W_L1→STBY) | 0,5 s de TTC |
-| TTC ≤ 3,0 s (W_L2) | TTC > 3,5 s (W_L2→W_L1) | 0,5 s de TTC |
-| TTC ≤ 2,2 s (B_L1) | TTC > 2,5 s (B_L1→W_L2) | 0,3 s de TTC |
-| TTC ≤ 1,8 s (B_L2) | TTC > 2,0 s (B_L2→B_L1) | 0,2 s de TTC |
+**Exceção BRAKE_L3:** Se `desired <= WARNING` (TTC alto, ameaça desapareceu), a de-escalação vai para `POST_BRAKE` ao invés de percorrer L2 -> L1 -> WARNING -> STANDBY. Isso porque o veículo em BRAKE_L3 provavelmente já está quase parado — manter frenagem residual é mais seguro do que soltar o freio gradualmente.
 
-### Overrides globais (maior prioridade absoluta)
+### Por que 0,2 s (20 ciclos)?
 
-Estas transições são verificadas **antes** de qualquer lógica de ameaça e preemptem qualquer estado:
+- Ruído de sensor típico dura 1-3 ciclos (10-30 ms) -> filtrado completamente por 20 ciclos
+- 0,2 s é percebido como instantâneo pelo motorista (limiar de percepção ~250 ms)
+- UNECE 152 recomenda que o sistema não alterne estados em menos de 100 ms — 0,2 s proporciona margem de 100%
+
+---
+
+## Overrides globais (maior prioridade absoluta)
+
+Estas verificações são executadas **no início** de `fsm_update()`, antes de qualquer lógica de ameaça:
+
+### 1. Fault -> OFF (FR-FSM-005)
 
 ```c
-/* Override 1: Fault ativo em percepção → força OFF */
-if (perc->fault_active == 1U) {
-    next_state = AEB_STATE_OFF;
-    goto fsm_done;
-}
-
-/* Override 2: Velocidade fora da faixa de operação → força STANDBY
-   (com exceção de iminência de colisão — veja Exception 2 abaixo) */
-if ((v_ego < AEB_V_EGO_MIN) || (v_ego > AEB_V_EGO_MAX)) {
-    if (imminent_collision == 0U) {
-        next_state = AEB_STATE_STANDBY;
-        goto fsm_done;
-    }
-}
-
-/* Override 3: Driver override (acelerador pressionado) → força STANDBY */
-if (driver_override_active == 1U) {
-    next_state = AEB_STATE_STANDBY;
-    goto fsm_done;
+if (perception->fault != 0U)
+{
+    s_state = AEB_OFF;
+    /* Reset all timers */
+    return build_output(s_state);
 }
 ```
 
-**Nota MISRA sobre `goto`:** O uso de `goto` forward para um label único `fsm_done:` ao fim da função é um **desvio documentado** da regra MISRA 15.1. A justificativa aceita é que `goto` forward para um único label de saída é o mecanismo mais direto, auditável e verificável para implementar prioridade de overrides em C sem introduzir aninhamento profundo de `if/else` ou flags booleanas que obscurecem o fluxo de controle. A alternativa — múltiplas flags — produziria código mais difícil de certificar.
+Qualquer falha de percepção (timeout de radar/lidar, erro de CRC, falha de plausibilidade) força o sistema para OFF imediatamente.
+
+### 2. Velocidade fora da faixa -> STANDBY
+
+```c
+if ((perception->v_ego < V_EGO_MIN) || (perception->v_ego > V_EGO_MAX))
+```
+
+Onde `V_EGO_MIN = 2,78 m/s` (10 km/h, corrigido per SRS v3 / FR-DEC-009) e `V_EGO_MAX = 16,67 m/s` (60 km/h).
+
+> ⚠️ **Ação pendente no código C:** `aeb_config.h` define `V_EGO_MIN = 1.39f` — deve ser atualizado para `2.78f` para conformidade com FR-DEC-009 (SRS v3).
+
+**Exceção 1 — Vehicle stopped while braking:** Se o veículo está em BRAKE_L1/L2/L3 e `v_ego < 0,01 m/s`, a transição vai para POST_BRAKE (não STANDBY). Isso garante que o freio seja mantido após parada.
+
+**Exceção 2 — Close-range still closing:** Se `distance <= D_BRAKE_L1 (20 m)` e `v_rel > 0` (ainda fechando), o distance floor é aplicado mesmo com velocidade fora da faixa. Evita que o AEB desative nos últimos metros antes de uma colisão iminente.
+
+### 3. Driver override -> STANDBY (FR-DEC-006, FR-DEC-007)
+
+```c
+static uint8_t driver_override(const PerceptionData_t *p)
+{
+    uint8_t ovr = 0U;
+    if (p->brake_pedal != 0U)
+        ovr = 1U;                                      /* freio pressionado */
+    if (fabsf(p->steering_angle) > STEERING_OVERRIDE_DEG)
+        ovr = 1U;                                      /* |theta| > 5 deg */
+    return ovr;
+}
+```
+
+**Diferenciação de overrides:**
+- **Durante frenagem ativa (BRAKE_L1/L2/L3):** Pedal de freio OU volante > 5 deg -> STANDBY
+- **Em POST_BRAKE:** Apenas pedal de acelerador -> STANDBY (o motorista decide retomar movimento)
+- **Em WARNING:** Pedal de freio OU volante > 5 deg -> STANDBY (o motorista já reagiu)
 
 ---
 
 ## Função `evaluate_threat()`
 
-Esta função interna determina o nível de ameaça instantâneo baseado em TTC, distância e `is_closing`. É chamada a cada ciclo dentro de `aeb_fsm_update()`:
+Esta função determina o nível de ameaça instantâneo. Retorna o estado-alvo (`AEB_State_t`) baseado em TTC, distância de frenagem e proximidade:
 
 ```c
-typedef enum {
-    THREAT_NONE   = 0,   /* Sem ameaça detectada                */
-    THREAT_WARN1  = 1,   /* Nível de alerta 1 (TTC <= 4.0 s)    */
-    THREAT_WARN2  = 2,   /* Nível de alerta 2 (TTC <= 3.0 s)    */
-    THREAT_BRAKE1 = 3,   /* Frenagem nível 1 (TTC <= 2.2 s)     */
-    THREAT_BRAKE2 = 4,   /* Frenagem nível 2 (TTC <= 1.8 s)     */
-    THREAT_BRAKE3 = 5    /* Frenagem nível 3 (d <= 5 m + B2)    */
-} ThreatLevel_t;
-
-static ThreatLevel_t evaluate_threat(const PerceptionData_t *perc,
-                                     const TTCResult_t *ttc)
+static AEB_State_t evaluate_threat(const TTCResult_t      *ttc,
+                                   const PerceptionData_t *perception)
 {
-    ThreatLevel_t level = THREAT_NONE;
+    AEB_State_t target = AEB_STANDBY;
 
-    /* Sem fechamento → retorna imediatamente, sem ameaça */
-    if (ttc->is_closing == 0U) {
-        return THREAT_NONE;
+    /* Sem fechamento -> sem ameaça */
+    if (ttc->is_closing == 0U)
+        return AEB_STANDBY;
+
+    /* Escalonamento primário por TTC + d_brake */
+    if ((ttc->ttc <= TTC_BRAKE_L3) || (ttc->d_brake >= perception->distance))
+        target = AEB_BRAKE_L3;
+    else if (ttc->ttc <= TTC_BRAKE_L2)
+        target = AEB_BRAKE_L2;
+    else if (ttc->ttc <= TTC_BRAKE_L1)
+        target = AEB_BRAKE_L1;
+    else if (ttc->ttc <= TTC_WARNING)
+        target = AEB_WARNING;
+    else
+        target = AEB_STANDBY;
+
+    /* Distance floor: impede de-escalação prematura quando próximo */
+    if (ttc->is_closing != 0U) {
+        if (perception->distance <= D_BRAKE_L3 && target < AEB_BRAKE_L3)
+            target = AEB_BRAKE_L3;
+        else if (perception->distance <= D_BRAKE_L2 && target < AEB_BRAKE_L2)
+            target = AEB_BRAKE_L2;
+        else if (perception->distance <= D_BRAKE_L1 && target < AEB_BRAKE_L1)
+            target = AEB_BRAKE_L1;
     }
 
-    /* Escalonamento primário por TTC */
-    if (ttc->ttc_s <= AEB_TTC_BRAKE_L2) {           /* <= 1.8 s */
-        level = THREAT_BRAKE2;
-    } else if (ttc->ttc_s <= AEB_TTC_BRAKE_L1) {    /* <= 2.2 s */
-        level = THREAT_BRAKE1;
-    } else if (ttc->ttc_s <= AEB_TTC_WARN_L2) {     /* <= 3.0 s */
-        level = THREAT_WARN2;
-    } else if (ttc->ttc_s <= AEB_TTC_WARN_L1) {     /* <= 4.0 s */
-        level = THREAT_WARN1;
-    } else {
-        level = THREAT_NONE;
-    }
-
-    /* Upgrade para THREAT_BRAKE3 se em frenagem E distância crítica */
-    if ((level >= THREAT_BRAKE2) && (perc->range_m <= AEB_D_BRAKE_L3)) {
-        level = THREAT_BRAKE3;
-    }
-
-    return level;
+    return target;
 }
 ```
+
+### Limiares de TTC (de `aeb_config.h`)
+
+| Parâmetro | Valor | Descrição |
+|-----------|:-----:|-----------|
+| `TTC_WARNING` | 4,0 s | Limiar para WARNING |
+| `TTC_BRAKE_L1` | 3,0 s | Limiar para BRAKE_L1 |
+| `TTC_BRAKE_L2` | 2,2 s | Limiar para BRAKE_L2 |
+| `TTC_BRAKE_L3` | 1,8 s | Limiar para BRAKE_L3 |
+
+### Critério `d_brake >= distance`
+
+Quando a distância de frenagem calculada (`d_brake`) ultrapassa a distância real ao alvo, o sistema escala para BRAKE_L3 independente do TTC. Isso cobre cenários onde o TTC é alto (ex.: ego lento, alvo próximo) mas a distância de parada já foi excedida.
 
 ---
 
-## Distance Floor — Lógica de distância mínima de frenagem {#distance-floor}
+## Distance Floor — Lógica de distância mínima de frenagem
 
 ### O problema que o Distance Floor resolve
 
-Em um cenário de ultrapassagem rápida, o TTC pode temporariamente cair para 2,0 s com o alvo a 60 m de distância — nenhuma ação de frenagem seria adequada, pois o veículo está claramente mudando de faixa. Sem o distance floor, o sistema interpretaria este TTC como uma emergência e aplicaria BRAKE_L1.
+Em um cenário de ultrapassagem rápida, o TTC pode temporariamente cair para 2,0 s com o alvo a 60 m de distância — nenhuma ação de frenagem seria adequada. Sem o distance floor, o sistema interpretaria este TTC como uma emergência.
 
-O distance floor adiciona uma **condição AND de distância** nas transições de frenagem: além do TTC baixo, o alvo deve estar fisicamente próximo o suficiente para justificar frenagem autônoma.
+O distance floor adiciona uma **condição de piso de distância**: se o alvo está dentro de uma zona crítica E se está fechando, o sistema não permite de-escalação abaixo do nível correspondente, mesmo que o TTC suba.
 
-### Implementação do gating por distância
+### Thresholds de distância (de `aeb_config.h`)
 
-```c
-/* Aplicado após evaluate_threat(), antes de usar o nível na FSM */
+| Parâmetro | Valor | Nível mínimo mantido |
+|-----------|:-----:|:--------------------:|
+| `D_BRAKE_L1` | 20 m | BRAKE_L1 (2,0 m/s²) |
+| `D_BRAKE_L2` | 10 m | BRAKE_L2 (4,0 m/s²) |
+| `D_BRAKE_L3` | 5 m | BRAKE_L3 (6,0 m/s²) |
 
-/* BRAKE_L1 só é válido se d <= 20 m */
-if ((threat >= THREAT_BRAKE1) && (perc->range_m > AEB_D_BRAKE_L1)) {
-    threat = THREAT_WARN2;   /* rebaixa: distante demais para freiar */
-}
-/* BRAKE_L2 só é válido se d <= 10 m */
-if ((threat >= THREAT_BRAKE2) && (perc->range_m > AEB_D_BRAKE_L2)) {
-    threat = THREAT_BRAKE1;  /* rebaixa um nível */
-}
-/* BRAKE_L3 (via BRAKE3) só é válido se d <= 5 m */
-if ((threat >= THREAT_BRAKE3) && (perc->range_m > AEB_D_BRAKE_L3)) {
-    threat = THREAT_BRAKE2;  /* rebaixa um nível */
-}
-```
+### Condição de aplicação
 
-Este gating é aplicado **apenas quando `is_closing = 1`** — se o alvo não está se aproximando, `evaluate_threat()` já retornou `THREAT_NONE` antes de chegar aqui.
+O distance floor é aplicado **apenas quando `is_closing = 1`** (alvo se aproximando). Quando `is_closing = 0` (alvo se afastando ou velocidade relativa <= 0), o floor é desabilitado — isso evita que o ego continue frenando desnecessariamente quando o alvo já está se afastando (ex.: cenário CCRm com alvo em movimento).
 
 ### Referências normativas
 
 | Fonte | Trecho relevante |
 |-------|-----------------|
-| **UNECE Regulation No. 152** | Seção 5.2.2 — define distâncias mínimas de ativação de AEBS por faixa de velocidade do ego |
-| **ISO 22839:2013** | Clause 6.3 — *Forward Vehicle Collision Warning Systems: functional requirements* incluem distance floor para reduzir falsas ativações |
-| **MDPI Sensors 2024** | "Optimizing AEB Thresholds for NCAP" — análise quantitativa mostrando que distance floors de 20/10/5 m reduzem em 34% as falsas ativações em cenários de autoestrada sem comprometer pontuação CCR |
-| **LPB — Lowest Possible Braking** | Princípio de que a intervenção autônoma deve ser a **mínima necessária** para evitar colisão, não a máxima possível |
-
----
-
-## Exceção de iminência em V_EGO_MIN (Exception 2 — `fsm_update`)
-
-### O problema
-
-O override `v_ego < AEB_V_EGO_MIN → STANDBY` existe para prevenir ativações em manobras de baixa velocidade. Porém, ele cria um risco específico: um veículo desacelerando de 6 km/h para 4 km/h nos últimos 3 metros antes de um obstáculo parado teria o AEB desativado exatamente quando a frenagem é mais crítica.
-
-### A exceção
-
-```c
-/* Determina iminência de colisão: alvo próximo E fechando */
-uint8_t imminent_collision = 0U;
-if ((perc->range_m < AEB_D_BRAKE_L3) &&   /* d < 5 m */
-    (ttc->is_closing == 1U)) {
-    imminent_collision = 1U;
-}
-
-/* Override de velocidade mínima — com exceção de iminência */
-if ((v_ego < AEB_V_EGO_MIN) && (imminent_collision == 0U)) {
-    next_state = AEB_STATE_STANDBY;
-    goto fsm_done;
-}
-/* Se imminent_collision == 1U: NÃO aplica o override.
-   O sistema mantém o estado de frenagem atual. */
-```
-
-### Critério para "iminência"
-
-A iminência é definida pela conjunção de **dois critérios**:
-1. Distância ao alvo < `AEB_D_BRAKE_L3 = 5 m` — dentro da zona de frenagem máxima
-2. `is_closing = 1` — o alvo ainda está se aproximando (não é um objeto estático que o ego já passou)
-
-Apenas distância próxima sem fechamento (ex.: ego parado a 3 m de uma parede) não configura iminência e não aciona a exceção.
+| **UNECE Regulation No. 152** | sec. 5.2.2 — distâncias mínimas de ativação de AEBS por faixa de velocidade |
+| **ISO 22839:2013** | Clause 6.3 — *Forward Vehicle Collision Warning Systems: functional requirements* |
+| **LPB — Lowest Possible Braking** | Princípio de que a intervenção deve ser a mínima necessária para evitar colisão |
 
 ---
 
@@ -241,48 +236,42 @@ Apenas distância próxima sem fechamento (ex.: ego parado a 3 m de uma parede) 
 
 ### Requisito funcional
 
-**FR-BRK-005:** Após o veículo atingir v_ego < 0,01 m/s enquanto em estado de frenagem ativa (`BRAKE_L1` ou `BRAKE_L2`), o sistema deve manter pressão de freio equivalente a `AEB_DECEL_L3 = 6 m/s²` por `AEB_POST_BRAKE_HOLD = 2,0 s`.
+**FR-BRK-005:** Após o veículo atingir v_ego < 0,01 m/s enquanto em frenagem ativa (`BRAKE_L1`, `BRAKE_L2` ou `BRAKE_L3`), o sistema deve manter pressão de freio equivalente a `DECEL_L3 = 6 m/s²` por `POST_BRAKE_HOLD = 2,0 s`.
 
-### Implementação
+### Implementação (de `aeb_fsm.c`)
 
 ```c
-/* Timer do POST_BRAKE: variável estática, acumulada em dt */
-static float s_post_brake_timer = 0.0f;
-
-/* Transição para POST_BRAKE (detectada dentro do handler de BRAKE_Lx): */
-if (v_ego < AEB_V_STOP_THRESHOLD) {   /* 0.01 m/s */
-    s_post_brake_timer = 0.0f;
-    next_state = AEB_STATE_POST_BRAKE;
-}
-
-/* Handler do estado POST_BRAKE: */
-case AEB_STATE_POST_BRAKE:
-{
-    s_post_brake_timer += 0.01f;         /* dt = 10 ms */
-
-    output->target_decel  = AEB_DECEL_L3;  /* 6.0 m/s² */
-    output->brake_active  = 1U;
-    output->alert_visual  = 1U;
-    output->alert_audible = 0U;            /* sonoro desligado: veículo parado */
-
-    if (s_post_brake_timer >= AEB_POST_BRAKE_HOLD) {  /* 2.0 s */
-        s_post_brake_timer = 0.0f;
-        next_state = AEB_STATE_STANDBY;
+case AEB_POST_BRAKE:
+    if (s_state_timer >= POST_BRAKE_HOLD)   /* 2.0 s */
+    {
+        s_state       = AEB_STANDBY;
+        s_state_timer = 0.0F;
     }
     break;
-}
+```
+
+Com saída:
+```c
+case AEB_POST_BRAKE:
+    out.target_decel  = DECEL_L3;   /* 6.0 m/s^2 */
+    out.alert_visual  = 1U;         /* luzes de freio ativas */
+    out.alert_audible = 0U;         /* sonoro desligado */
+    out.brake_active  = 1U;
+    break;
 ```
 
 ### Justificativa dos 2,0 s de hold
 
 | Fator | Valor | Fonte |
 |-------|-------|-------|
-| Tempo de reação do motorista surpreso | 1,2–2,0 s | SAE J2944 |
-| Tempo exigido por UNECE 152 | ≥ 1,8 s | UNECE Reg. 152, §5.2.4 |
-| Gradiente de via máximo considerado | 5% (~0,5 m/s²) | Norma Euro NCAP CCR |
+| Tempo de reação do motorista surpreso | 1,2-2,0 s | SAE J2944 |
+| Tempo exigido por UNECE 152 | >= 1,8 s | UNECE Reg. 152, sec. 5.2.4 |
+| Gradiente de via máximo considerado | 5% (~0,5 m/s²) | Euro NCAP CCR |
 | Margem sobre requisito UNECE | 11% (2,0 vs 1,8 s) | Escolha de projeto |
 
-Com `AEB_DECEL_L3 = 6 m/s²` e gradiente máximo de 0,5 m/s², a força resultante de frenagem mesmo no pior caso é de 5,5 m/s² — suficiente para manter parado. O alerta sonoro é desligado pois não há função de segurança em manter alerta audível após parada completa (veículo imóvel não colide).
+### Override em POST_BRAKE
+
+Apenas o **acelerador** pode tirar o sistema de POST_BRAKE antes dos 2,0 s — o motorista decide conscientemente retomar o movimento. Pedal de freio e volante **não** são overrides em POST_BRAKE (o veículo já está parado; o motorista pressionar o freio é redundante).
 
 ---
 
@@ -290,133 +279,128 @@ Com `AEB_DECEL_L3 = 6 m/s²` e gradiente máximo de 0,5 m/s², a força resultan
 
 ### Requisito
 
-Antes de qualquer transição para estado BRAKE, o sistema deve ter permanecido em estado WARNING por pelo menos `AEB_WARNING_TO_BRAKE_MIN = 0,8 s`.
+**FR-ALR-003:** Antes de qualquer transição para estado BRAKE, o sistema deve ter permanecido em WARNING por pelo menos `WARNING_TO_BRAKE_MIN = 0,8 s`.
 
-### Implementação
+### Implementação (de `aeb_fsm.c`)
 
 ```c
-static float s_warning_timer = 0.0f;
+case AEB_WARNING:
+    s_warning_accum += dt;   /* acumula tempo em WARNING */
 
-/* Em cada ciclo que o estado é WARNING_L1 ou WARNING_L2: */
-if ((current_state == AEB_STATE_WARNING_L1) ||
-    (current_state == AEB_STATE_WARNING_L2)) {
-    s_warning_timer += 0.01f;   /* acumula dt */
-} else {
-    s_warning_timer = 0.0f;     /* reset ao sair de WARNING */
-}
-
-/* Condição de transição para BRAKE (gate AND): */
-if ((threat >= THREAT_BRAKE1) &&
-    (distance_ok == 1U) &&
-    (s_warning_timer >= AEB_WARNING_TO_BRAKE_MIN)) {  /* 0.8 s */
-    next_state = AEB_STATE_BRAKE_L1;
-}
+    if (desired == AEB_STANDBY) {
+        /* De-escalação com histerese de 0.2 s */
+        s_debounce_timer += dt;
+        if (s_debounce_timer >= HYSTERESIS_TIME)
+            transition_to(AEB_STANDBY);
+    } else {
+        s_debounce_timer = 0.0F;
+        /* Escala para braking SOMENTE após 0.8 s em WARNING */
+        if (s_warning_accum >= WARNING_TO_BRAKE_MIN) {
+            if (desired == AEB_BRAKE_L3)
+                transition_to(AEB_BRAKE_L3);
+            else if (desired == AEB_BRAKE_L2)
+                transition_to(AEB_BRAKE_L2);
+            else if (desired == AEB_BRAKE_L1)
+                transition_to(AEB_BRAKE_L1);
+        }
+    }
+    break;
 ```
 
 ### Justificativa dos 0,8 s
 
-- **Evitabilidade pelo motorista:** O protocolo Euro NCAP CCR define que o sistema deve dar ao motorista a oportunidade de reagir antes da frenagem autônoma. Um alerta de 0,8 s a 50 km/h cobre ~11 m — suficiente para o motorista perceber e iniciar frenagem própria
-- **Prevenção de frenagem por falso positivo transitório:** Se o TTC cair brevemente (1–3 ciclos = 10–30 ms) devido a ruído de sensor, o timer de 0,8 s (80 ciclos) não será atingido, prevenindo frenagem espúria
-- **Alinhamento com Euro NCAP 2024:** A pontuação máxima no teste CCR exige alerta visual+sonoro precedendo a frenagem autônoma em ≥ 700 ms. O valor de 0,8 s proporciona 14% de margem.
-
----
-
-## Histerese de de-escalação
-
-### Problema sem histerese
-
-Sem histerese, um cenário de TTC oscilando em torno de 3,0 s causaria transições rápidas entre `WARNING_L1` e `WARNING_L2` a cada ciclo — comportamento inaceitável em termos de conforto, segurança e diagnóstico.
-
-### Implementação
-
-```c
-static float         s_hysteresis_timer      = 0.0f;
-static ThreatLevel_t s_pending_deescalation  = THREAT_NONE;
-
-/* Ao detectar redução de ameaça: */
-if (new_threat < s_current_threat) {
-    if (new_threat == s_pending_deescalation) {
-        /* Mesma de-escalação pendente: acumula timer */
-        s_hysteresis_timer += 0.01f;
-        if (s_hysteresis_timer >= AEB_HYSTERESIS_TIME) {  /* 0.2 s */
-            s_current_threat      = new_threat;
-            s_hysteresis_timer    = 0.0f;
-        }
-    } else {
-        /* De-escalação diferente: reinicia timer com nova meta */
-        s_pending_deescalation = new_threat;
-        s_hysteresis_timer     = 0.01f;
-    }
-} else {
-    /* Ameaça igual ou maior: cancela qualquer de-escalação pendente */
-    s_pending_deescalation = s_current_threat;
-    s_hysteresis_timer     = 0.0f;
-}
-```
-
-### Por que 0,2 s (20 ciclos)?
-
-- Ruído de sensor típico dura 1–3 ciclos (10–30 ms) → filtrado completamente por 20 ciclos
-- 0,2 s é percebido como instantâneo pelo motorista (limiar de percepção de mudança visual ~250 ms)
-- UNECE 152 não especifica valor de histerese mas recomenda que o sistema não alterne estados em menos de 100 ms — 0,2 s proporciona margem de 100%
+- **Evitabilidade:** A 50 km/h, 0,8 s cobre ~11 m — suficiente para o motorista perceber e iniciar frenagem própria
+- **Prevenção de falso positivo:** Se o TTC cair brevemente (1-3 ciclos) por ruído de sensor, o timer de 0,8 s (80 ciclos) não será atingido
+- **Euro NCAP 2024:** Pontuação máxima exige alerta precedendo frenagem autônoma em >= 700 ms. O valor de 0,8 s proporciona 14% de margem
 
 ---
 
 ## Diagrama de transição de estados
 
 ```
-              ┌──────────────────────────────────────────────────┐
-              │        OVERRIDES GLOBAIS (prioridade máxima)     │
-              │  [1] fault_active=1          → OFF               │
-              │  [2] v fora de [1.39,16.67]  → STANDBY*          │
-              │  [3] driver_override=1        → STANDBY           │
-              │  (* com exceção de iminência < 5 m)              │
-              └──────────────────────────────────────────────────┘
+              +------------------------------------------------------------+
+              |          OVERRIDES GLOBAIS (prioridade máxima)              |
+              |  [1] fault                        -> OFF                   |
+              |  [2] v fora de [2.78, 16.67] m/s  -> STANDBY*             |
+              |  [3] brake_pedal OU |theta| > 5   -> STANDBY              |
+              |  [4] accel_pedal (só POST_BRAKE)  -> STANDBY              |
+              |  (* com exceções: v_ego->0 em brake -> POST_BRAKE;        |
+              |     close-range closing -> mantém distance floor)          |
+              +------------------------------------------------------------+
 
-  ┌────────────────────────────────────────────────────────────────────┐
-  │                              OFF (0)                               │
-  │  fault ativo / sistema inibido                                     │
-  └──────────────────────────────┬─────────────────────────────────────┘
-                                 │ fault cleared + v in range
-                                 ▼
-  ┌────────────────────────────────────────────────────────────────────┐
-  │                           STANDBY (1)                              │
-  │  v_ego ∈ [1.39, 16.67] m/s, sem ameaça ativa                     │
-  └──────────┬─────────────────────────────────────────────────────────┘
-             │ TTC ≤ 4.0 s + is_closing                  ▲
-             ▼                                TTC > 4.5 s × 0.2 s
-  ┌──────────────────────┐◄────────────────────────────────────────────
-  │    WARNING_L1 (2)    │
-  │  visual=1, aud=0     │──────────────────────────────────────────►│
-  └──────────┬───────────┘ TTC > 3.5 s × 0.2 s          ▲          │
-             │ TTC ≤ 3.0 s                               │          │ TTC > 4.5s
-             ▼                                           │          │ × 0.2s
-  ┌──────────────────────┐◄────────────────────────────────          │
-  │    WARNING_L2 (3)    │                                           │
-  │  visual=1, aud=1     │──────────────────────────────────────────►┘
-  └──────────┬───────────┘ TTC > 2.5 s × 0.2 s
-             │ TTC ≤ 2.2 s + d ≤ 20 m + warning_timer ≥ 0.8 s
-             ▼                         ▲
-  ┌──────────────────────┐    TTC > 2.5 s × 0.2 s
-  │     BRAKE_L1 (4)     │◄────────────────────────────────
-  │  decel=2.0, brake=1  │
-  └──────────┬───────────┘──────────────────────────────►│ TTC > 2.0s × 0.2s
-             │ TTC ≤ 1.8 s + d ≤ 10 m                   ▼
-             ▼                             ┌──────────────────────┐
-  ┌──────────────────────┐                 │    de-escalação      │
-  │     BRAKE_L2 (5)     │                 └──────────────────────┘
-  │  decel=4.0 (ou 6.0)  │
-  │  brake=1, aud=1      │
-  └──────────┬───────────┘
-             │ v_ego < 0.01 m/s
-             ▼
-  ┌──────────────────────┐
-  │   POST_BRAKE (6)     │──────────────────► STANDBY (após 2.0 s)
-  │  decel=6.0, brake=1  │
-  │  visual=1, aud=0     │
-  └──────────────────────┘
+  +--------------------------------------------------------------------+
+  |                              OFF (0)                                |
+  |  fault ativo / sistema desabilitado via InfoCenter                  |
+  +------------------------------+-------------------------------------+
+                                 | ~fault
+                                 v
+  +--------------------------------------------------------------------+
+  |                           STANDBY (1)                               |
+  |  v_ego in [2.78, 16.67] m/s, sem ameaça ativa                     |
+  +----------+---------------------------------------------------------+
+             | desired >= WARNING + is_closing
+             | (TTC <= 4.0 s OU d_brake >= distance OU d <= 20 m)
+             v
+  +-------------------------------------------------+
+  |                  WARNING (2)                     |  <-- BRAKE_L1
+  |  visual=1, audible=1, brake=0                   |      (de-escalacao
+  |  warning_timer acumula a cada ciclo             |       x 0.2 s)
+  +---------+---------------------------------------+
+            | desired >= BRAKE_L1 + warning_timer >= 0.8 s
+            v
+  +-------------------------------------------------+
+  |                BRAKE_L1 (3)                      |  <-- BRAKE_L2
+  |  decel=2.0 m/s2, brake=1, visual=1, audible=1  |      (de-escalacao
+  +---------+---------------------------------------+       x 0.2 s)
+            | desired >= BRAKE_L2 (imediato)
+            v
+  +-------------------------------------------------+
+  |                BRAKE_L2 (4)                      |  <-- BRAKE_L3
+  |  decel=4.0 m/s2, brake=1, visual=1, audible=1  |      (de-escalacao
+  +---------+---------------------------------------+       x 0.2 s)
+            | desired = BRAKE_L3 (imediato)
+            v
+  +-------------------------------------------------+
+  |                BRAKE_L3 (5)                      |
+  |  decel=6.0 m/s2, brake=1, visual=1, audible=1  |
+  +---------+---------------------------------------+
+            | v_ego < 0.01 m/s (qualquer BRAKE_Lx)
+            | OU desired <= WARNING x 0.2 s (de L3)
+            v
+  +-------------------------------------------------+
+  |              POST_BRAKE (6)                      |
+  |  decel=6.0 m/s2, brake=1, visual=1, audible=0  |
+  |  Mantém por 2.0 s, depois -> STANDBY            |
+  |  Override: apenas acelerador -> STANDBY          |
+  +-------------------------------------------------+
 ```
 
+### Legenda do diagrama
+
+| Seta | Tipo | Debounce |
+|------|------|:--------:|
+| Escalacao | Imediata | 0 ms (exceto WARNING->BRAKE: 800 ms min.) |
+| De-escalacao | Com histerese | 200 ms |
+| Override | Imediata | 0 ms |
+
 ---
+
+## Modelo Stateflow / Simulink
+
+O arquivo `AEB_Stateflow_build.m` gera um modelo Stateflow fielmente reproduzindo o comportamento de `aeb_fsm.c`. Correções aplicadas em relação a versões anteriores:
+
+1. **V_EGO_MIN = 2,78 m/s (10 km/h)** — corrigido per FR-DEC-009 (SRS v3); Simulink usa valor correto; código C pendente de atualização
+2. **STANDBY -> WARNING first** — toda ameaça entra em WARNING antes de BRAKE
+3. **Input `is_closing`** — sem frenagem para alvos se afastando
+4. **Distance floors** — D_BRAKE_L1=20m, D_BRAKE_L2=10m, D_BRAKE_L3=5m
+5. **De-escalação single-step** — L3->L2, L2->L1, L1->WARNING
+6. **POST_BRAKE `alert_visual = false`** — FR-ALR-005 removido no SRS v3; ambos alertas desligados em POST\_BRAKE
+7. **Override diferenciado** — freio/volante durante frenagem; acelerador apenas em POST_BRAKE
+
+O modelo aceita 10 entradas (`ttc`, `d_brake`, `distance`, `v_ego`, `v_rel`, `is_closing`, `brake_pedal`, `steering_angle`, `accel_pedal`, `fault`) e produz 5 saídas (`fsm_state`, `target_decel`, `alert_visual`, `alert_audible`, `brake_active`).
+
+---
+
+*Última atualização: março de 2026*
 
 *Próxima seção recomendada: [Controlador PID](Controlador-PID.md)*

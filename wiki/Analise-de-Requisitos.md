@@ -52,12 +52,12 @@ Normas externas (ISO 26262, UNECE 152, Euro NCAP CCR v4.3)
 | ID | Descrição resumida | Status | Módulo C | Seção |
 |----|--------------------|--------|----------|-------|
 | FR-PER-001 | Validação de sensor a cada 10 ms (latch 3 ciclos) | ✅ | `aeb_perception.c` | §2.1 |
-| FR-PER-002 | Faixa de velocidade do ego para ativação | ⚠️ | `aeb_fsm.c` | §2.1 |
+| FR-PER-002 | Faixa de velocidade do ego para ativação | ⚠️ C: 5 km/h (SRS v3 corrigiu para 10 km/h — C pendente) | `aeb_fsm.c` | §2.1 |
 | FR-DEC-001 | TTC = d/v_rel quando v_rel > 0,5 m/s | ✅ | `aeb_ttc.c` | §2.2 |
-| FR-DEC-002 | d_brake = v²/(2×DECEL_L3) | ✅ | `aeb_ttc.c` | §2.2 |
+| FR-DEC-002 | d_brake = v²/(2×DECEL_L3), DECEL_L3 = 6 m/s² | ✅ | `aeb_ttc.c` | §2.2 |
 | FR-ALR-001 | Alerta visual + sonoro antes da frenagem | ✅ | `aeb_alert.c`, `aeb_fsm.c` | §2.3 |
 | FR-ALR-002 | Duração mínima do alerta ≥ 0,8 s | ✅ | `aeb_fsm.c` | §2.3 |
-| FR-BRK-001 | Jerk máximo ≤ 2 m/s²/ciclo | ✅ | `aeb_pid.c` | §2.4 |
+| FR-BRK-001 | Jerk máximo ≤ 2 m/s²/ciclo | ⚠️ C: MAX_JERK=100 excede SRS v3 (≤10 m/s³); Simulink ✅ | `aeb_pid.c` | §2.4 |
 | FR-BRK-002 | Níveis de desaceleração L1/L2/L3 | ✅ | `aeb_fsm.c` | §2.4 |
 | FR-BRK-003 | Override por ângulo de direção ≥ 5° | ✅ | `aeb_fsm.c` | §2.4 |
 | FR-BRK-004 | Override por pedal de freio | ✅ | `aeb_fsm.c` | §2.4 |
@@ -116,9 +116,9 @@ A escolha de 3 ciclos (30 ms) de latch evita que ruídos de radar de ciclo únic
 | **ID** | FR-PER-002 |
 | **Descrição** | O sistema AEB deve estar ativo somente quando a velocidade do ego satisfaz `V_EGO_MIN ≤ v_ego ≤ V_EGO_MAX` |
 | **Critério de aceite** | Fora da janela de velocidade, a FSM não avança além de `AEB_STANDBY`; transições de escalamento são bloqueadas |
-| **Status** | ⚠️ Implementado com desvio em V_EGO_MIN (ver Seção 4, Mudança 1) |
+| **Status** | ⚠️ C tem desvio: `V_EGO_MIN = 1,39 m/s (5 km/h)` — SRS v3 (FR-DEC-009) corrigiu para 2,78 m/s (10 km/h). C pendente de atualização. Simulink usa 2,78 m/s ✅ |
 | **Arquivo de implementação** | `c_embedded/src/aeb_fsm.c` — guarda na transição STANDBY → WARNING |
-| **Constantes de configuração** | `V_EGO_MIN = 1,39 m/s (5 km/h)`, `V_EGO_MAX = 16,67 m/s (60 km/h)` |
+| **Constantes de configuração** | `V_EGO_MIN = 1,39 m/s (5 km/h)` *(C atual — pendente)* / `2,78 m/s (10 km/h)` *(SRS v3, Simulink)*; `V_EGO_MAX = 16,67 m/s (60 km/h)` |
 
 ---
 
@@ -235,9 +235,9 @@ Requisitos do grupo **FR-BRK** cobrem o controle do atuador de frenagem, incluin
 | **ID** | FR-BRK-001 |
 | **Descrição** | A variação máxima de desaceleração entre ciclos consecutivos deve ser ≤ 2 m/s²/ciclo |
 | **Critério de aceite** | O incremento de pressão de freio por ciclo de 10 ms não deve exceder o equivalente a 2 m/s²/ciclo; o limitador de jerk no PID deve garantir isso mesmo em transições abruptas de setpoint |
-| **Status** | ✅ (com desvio em MAX_JERK — ver Seção 4, Mudança 4) |
+| **Status** | ⚠️ **SRS v3 (FR-BRK-004) reduziu o limite de jerk de conforto para ≤ 10 m/s³.** Código C tem `MAX_JERK = 100,0 m/s³` — excede o limite. Simulink usa 1%/ciclo = 6 m/s³ ✅. C pendente de atualização (ver Seção 4, Mudança 4) |
 | **Arquivo de implementação** | `c_embedded/src/aeb_pid.c` — limitador de jerk no pós-processamento da saída PID |
-| **Constante de configuração** | `MAX_JERK = 100,0 m/s³` em `aeb_config.h` |
+| **Constante de configuração** | `MAX_JERK = 100,0 m/s³` em `aeb_config.h` *(C atual — excede SRS v3; deve ser ≤ 10 m/s³)* |
 
 **Relação entre MAX_JERK e variação de pressão por ciclo:**
 
@@ -245,19 +245,25 @@ A saída do PID é expressa em percentual de pressão de freio `[0–100%]`. O m
 
 ```
 Δ%/ciclo = MAX_JERK × (PID_OUTPUT_MAX / BRAKE_MAX_DECEL) × SIM_DT_CONTROLLER
-         = MAX_JERK × (100 / 10) × 0,01
-         = MAX_JERK × 0,1
+         = MAX_JERK × (100 / 6) × 0,01        ← DECEL_L3 = 6 m/s² (SRS v3 corrigido)
+         = MAX_JERK × 0,1667
 
 → Variação em m/s²/ciclo = (Δ%/ciclo) × (BRAKE_MAX_DECEL / PID_OUTPUT_MAX)
-                         = (MAX_JERK × 0,1) × (10 / 100)
+                         = (MAX_JERK × 0,1667) × (6 / 100)
                          = MAX_JERK × 0,01
 
-Com MAX_JERK = 100 m/s³:
-  Δ%/ciclo       = 100 × 0,1 = 10 %/ciclo
-  Δ m/s²/ciclo   = 100 × 0,01 = 1,0 m/s²/ciclo  ← dentro do limite de 2 m/s²/ciclo ✅
+Com MAX_JERK = 100 m/s³ (C atual):
+  Δ%/ciclo       = 100 × 0,1667 ≈ 16,7 %/ciclo
+  Δ m/s²/ciclo   = 100 × 0,01  =  1,0 m/s²/ciclo  ← dentro do limite de 2 m/s²/ciclo ✅
+  Jerk em m/s³   = 100 m/s³ → excede o limite SRS v3 de 10 m/s³ ❌
+
+Com MAX_JERK = 6 m/s³ (Simulink / meta SRS v3):
+  Δ%/ciclo       = 1 %/ciclo
+  Δ m/s²/ciclo   = 0,06 m/s²/ciclo  ← muito abaixo do limite ✅
+  Jerk em m/s³   = 6 m/s³ ≤ 10 m/s³ ✅
 ```
 
-FR-BRK-001 permanece satisfeito: a variação efetiva de desaceleração por ciclo é 1,0 m/s²/ciclo, abaixo do limite de 2 m/s²/ciclo.
+FR-BRK-001 (≤ 2 m/s²/ciclo) permanece satisfeito. Porém, **SRS v3 FR-BRK-004 adiciona o limite de 10 m/s³** que o código C atual viola. O Simulink modelo já está em conformidade com 6 m/s³.
 
 ---
 
@@ -338,7 +344,7 @@ Requisitos do grupo **FR-FSM** especificam a estrutura e comportamento da máqui
 | `AEB_BRAKE_L1` | 2,0 m/s² | 1 | 1 | 1 |
 | `AEB_BRAKE_L2` | 4,0 m/s² | 1 | 1 | 1 |
 | `AEB_BRAKE_L3` | 6,0 m/s² | 1 | 1 | 1 |
-| `AEB_POST_BRAKE` | 6,0 m/s² | 1 | 1 | 0 |
+| `AEB_POST_BRAKE` | 6,0 m/s² | 1 | 0 | 0 |
 
 ---
 
@@ -432,7 +438,7 @@ Requisitos do grupo **FR-COD** cobrem conformidade com normas de segurança func
 | NFR-PERF-002 | Latência de detecção → alerta | ≤ 30 ms | Latch máximo de 3 ciclos antes de detectar falha; alerta emitido no mesmo ciclo de entrada em WARNING | ✅ |
 | NFR-PERF-003 | Latência de alerta → frenagem | ≥ 800 ms (mínimo garantido) | `WARNING_TO_BRAKE_MIN = 0,8 s` | ✅ |
 | NFR-PERF-004 | Tempo de resposta do atuador | Τ = 50 ms, dead time = 30 ms | `BRAKE_TAU = 0,05 s`, `BRAKE_DEAD_TIME = 0,03 s` (modelo de primeira ordem) | ✅ |
-| NFR-PERF-005 | Tempo de rampa até pressão plena (BRAKE_L3) | ≤ 100 ms | `MAX_JERK = 100 m/s³` → 10%/ciclo → 60% em 60 ms | ✅ |
+| NFR-PERF-005 | Tempo de rampa até pressão plena (BRAKE_L3) | ≤ 100 ms | C: `MAX_JERK = 100 m/s³` → ~17%/ciclo → 60% em ~36 ms ✅ (rampa); porém excede jerk SRS v3 ❌. Simulink: 1%/ciclo → 60% em 600 ms — conforme SRS v3 mas requer revisão de performance | ⚠️ |
 
 ### NFR-SAF — Segurança funcional (ISO 26262)
 
@@ -442,7 +448,7 @@ Requisitos do grupo **FR-COD** cobrem conformidade com normas de segurança func
 | NFR-SAF-002 | Tempo máximo de detecção de falha de sensor | ≤ 30 ms | `SENSOR_FAULT_CYCLES = 3` × 10 ms = 30 ms | ✅ |
 | NFR-SAF-003 | Estado seguro em falha | `AEB_OFF` | Transições para OFF a partir de qualquer estado com `fault=1` | ✅ |
 | NFR-SAF-004 | Override do motorista — prioridade total | Sempre prevalece | `brake_pedal` e `steering_angle` verificados a cada ciclo | ✅ |
-| NFR-SAF-005 | Envelope de velocidade seguro | 5–60 km/h | `V_EGO_MIN`, `V_EGO_MAX` verificados antes de transições de escalamento | ✅ |
+| NFR-SAF-005 | Envelope de velocidade seguro | 10–60 km/h (SRS v3) | `V_EGO_MIN`, `V_EGO_MAX` verificados antes de transições de escalamento; C usa 5 km/h (pendente) | ⚠️ |
 
 ### NFR-COD — Padrões de código e manutenibilidade
 
@@ -462,19 +468,23 @@ Esta seção documenta as **cinco mudanças principais** realizadas durante a im
 
 ---
 
-### Mudança 1 — V_EGO_MIN: 10 km/h → 5 km/h
+### Mudança 1 — V_EGO_MIN: implementação C usa 5 km/h vs. SRS v3 = 10 km/h
 
-| | SRS original | Implementação atual |
-|-|-------------|---------------------|
-| **Valor** | 2,78 m/s (10 km/h) | 1,39 m/s (5 km/h) |
-| **Constante** | — | `V_EGO_MIN = 1.39f` em `aeb_config.h` |
-| **Requisito** | FR-PER-002 | FR-PER-002 ⚠️ |
+> ⚠️ **Revisão SRS v3 (FR-DEC-009):** O SRS v3 **reafirma 10 km/h** como valor de V_EGO_MIN. O código C usa 1,39 m/s (5 km/h) — **pendente de atualização**. Stateflow/Simulink já usa 2,78 m/s (10 km/h) ✅.
 
-**Problema identificado:** Com `V_EGO_MIN = 10 km/h`, durante uma frenagem de emergência próxima ao ponto de parada, o veículo reduzia de 10 km/h para 0 km/h em cerca de 0,5 s (à desaceleração máxima de DECEL_L3 = 6 m/s²). Ao cruzar o limiar de `V_EGO_MIN`, a FSM verificava `v_ego < V_EGO_MIN` e retornava ao estado STANDBY, interrompendo a frenagem autônoma — exatamente no momento em que ela é mais crítica (distância ao alvo ≈ 3–5 m).
+| | SRS original | C implementado | SRS v3 (FR-DEC-009) |
+|-|-------------|----------------|---------------------|
+| **Valor** | 2,78 m/s (10 km/h) | 1,39 m/s (5 km/h) | 2,78 m/s (10 km/h) — reafirmado |
+| **Constante** | — | `V_EGO_MIN = 1.39f` em `aeb_config.h` | Deve ser `2.78f` |
+| **Requisito** | FR-PER-002 | FR-PER-002 ⚠️ | FR-DEC-009 / FR-PER-002 |
 
-**Causa técnica:** A guarda `v_ego < V_EGO_MIN` era aplicada globalmente, inclusive durante estados de frenagem ativa. Uma desaceleração bem-sucedida do AEB causava auto-cancelamento inadvertido.
+**Histórico do desvio:** Durante a implementação C, o valor 10 km/h foi reduzido para 5 km/h por uma razão técnica: com `V_EGO_MIN = 10 km/h`, durante frenagem de emergência próxima ao ponto de parada, o veículo reduzia de 10 km/h para 0 km/h em cerca de 0,5 s (DECEL_L3 = 6 m/s²). Ao cruzar `V_EGO_MIN`, a FSM retornava para STANDBY, interrompendo a frenagem autônoma exatamente quando mais crítica (d ≈ 3–5 m).
 
-**Solução:** Reduzir `V_EGO_MIN` para 5 km/h (1,39 m/s) garante que a FSM mantenha frenagem ativa até a parada completa do veículo. A mudança é conservadora no sentido de segurança (fail-safe): mantém mais frenagem, não menos. Está alinhada com a ISO 22839:2013 §5.3, que define que o sistema deve operar enquanto houver risco de colisão, independentemente da velocidade instantânea.
+**Causa técnica do desvio original:** A guarda `v_ego < V_EGO_MIN` era aplicada globalmente, inclusive durante estados de frenagem ativa. Uma desaceleração bem-sucedida do AEB causava auto-cancelamento inadvertido.
+
+**Motivação original da mudança:** Reduzir para 5 km/h garantia frenagem até parada completa. Conservador em termos de segurança (mantém mais frenagem, não menos), alinhado com ISO 22839:2013 §5.3.
+
+**Status com SRS v3:** A revisão dos requisitos (Requisitos AEB.xlsx) decidiu **manter 10 km/h** — FR-DEC-009. A justificativa é que a guarda deve ser condicional ao estado: durante BRAKE_Lx e POST_BRAKE, a guarda de V_EGO_MIN não deve cancelar a frenagem. A lógica de aplicação foi esclarecida no SRS v3. **Ação pendente:** Atualizar `aeb_config.h` → `V_EGO_MIN = 2.78f` **e** tornar a guarda condicional por estado em `aeb_fsm.c`.
 
 ```mermaid
 timeline
@@ -556,13 +566,15 @@ Apenas 24% de pressão de freio no nível máximo — o veículo mal desacelerav
 
 ---
 
-### Mudança 4 — MAX_JERK: 10,0 → 100,0 m/s³
+### Mudança 4 — MAX_JERK: 10,0 → 100,0 m/s³ (C) — SRS v3 reestabelece ≤ 10 m/s³
 
-| | SRS original | Implementação atual |
-|-|-------------|---------------------|
-| **Valor** | `MAX_JERK = 10,0 m/s³` (conforto de passageiro) | `MAX_JERK = 100,0 m/s³` (emergência) |
-| **Constante** | — | `MAX_JERK = 100.0f` em `aeb_config.h` |
-| **Requisito** | FR-BRK-001 | FR-BRK-001 ✅ |
+> ⚠️ **Revisão SRS v3 (FR-BRK-004):** O SRS v3 reafirma o limite de **10 m/s³** para jerk. O código C usa `MAX_JERK = 100,0 m/s³` — **não conforme**. O Simulink usa 1%/ciclo = 6 m/s³ — **conforme** ✅. C pendente de atualização.
+
+| | SRS original | C implementado | SRS v3 (FR-BRK-004) |
+|-|-------------|----------------|---------------------|
+| **Valor** | `MAX_JERK = 10,0 m/s³` (conforto) | `MAX_JERK = 100,0 m/s³` (emergência) | ≤ 10 m/s³ — reafirmado |
+| **Constante** | — | `MAX_JERK = 100.0f` em `aeb_config.h` | Deve ser ≤ `10.0f` |
+| **Requisito** | FR-BRK-001 | FR-BRK-001 ✅ (m/s²/ciclo) / FR-BRK-004 ❌ (m/s³) | FR-BRK-004 |
 
 **Problema identificado:** Com `MAX_JERK = 10 m/s³` e ciclo de 10 ms, a variação máxima de pressão por ciclo era 1%/ciclo. Para atingir 60% de pressão (BRAKE_L3):
 
@@ -583,13 +595,16 @@ Em um cenário CCRs com TTC de 1,8 s e distância inicial de 30 m, esses 600 ms 
 
 O SRS original adotou o valor de conforto de 10 m/s³ (usado em frenagem normal), sem diferenciar o regime de emergência. O Euro NCAP AEB CCR v4.3 §3.3.1 não impõe limite à taxa de aplicação de freio em cenários de colisão iminente.
 
-| Parâmetro | MAX_JERK = 10 m/s³ | MAX_JERK = 100 m/s³ |
-|-----------|---------------------|----------------------|
-| Δ%/ciclo | 1% | 10% |
-| Tempo para 60% de pressão | **600 ms** ❌ | **60 ms** ✅ |
-| Distância percorrida durante rampa (60 km/h) | ~10 m ❌ | ~1 m ✅ |
-| Δ m/s²/ciclo | 0,1 (< 2 ✅) | 1,0 (< 2 ✅) |
-| Conformidade FR-BRK-001 | ✅ (mas ineficaz) | ✅ (e eficaz) |
+| Parâmetro | MAX_JERK = 10 m/s³ | MAX_JERK = 100 m/s³ (C atual) | Simulink (1%/ciclo = 6 m/s³) |
+|-----------|---------------------|-------------------------------|-------------------------------|
+| Δ%/ciclo | 1% | ~17% | 1% |
+| Tempo para 60% de pressão | **600 ms** ❌ | **~36 ms** ✅ | **600 ms** (trade-off) |
+| Distância percorrida durante rampa (60 km/h) | ~10 m | ~1 m | ~10 m |
+| Δ m/s²/ciclo | 0,06 (< 2 ✅) | 1,0 (< 2 ✅) | 0,06 (< 2 ✅) |
+| Conformidade FR-BRK-001 (≤2 m/s²/ciclo) | ✅ | ✅ | ✅ |
+| Conformidade FR-BRK-004 SRS v3 (≤10 m/s³) | ✅ | **❌ (100 m/s³)** | ✅ (6 m/s³) |
+
+**Tensão de requisitos identificada:** O Simulink satisfaz FR-BRK-004 (SRS v3) com 6 m/s³, mas a rampa de 600 ms pode ser insuficiente em cenários de TTC curto (< 1,5 s). A ação corretiva recomendada para o C é `MAX_JERK = 6.0f` junto com verificação se o `target_decel` de POST_BRAKE é entregue com setpoint imediato (sem limitação de jerk) para preservar performance.
 
 ---
 
@@ -701,8 +716,8 @@ flowchart TB
         P1["SENSOR_FAULT_CYCLES=3\nRANGE_MIN=0,5m\nRANGE_MAX=300m"]
         P2["V_REL_MIN=0,5m/s\nTTC_MAX=10s\nTTC_WARNING/L1/L2/L3"]
         P3["WARNING_TO_BRAKE_MIN=0,8s"]
-        P4["PID_KP=10 · PID_KI=0,05\nMAX_JERK=100m/s³\nDECEL_L1/L2/L3\nPOST_BRAKE_HOLD=2s"]
-        P5["HYSTERESIS_TIME=0,2s\nTTC_HYSTERESIS=0,15s\nD_BRAKE_L1/L2/L3\nV_EGO_MIN/MAX"]
+        P4["PID_KP=10 · PID_KI=0,05\nMAX_JERK=100m/s³ (C/pendente)\nDECEL_L1/L2/L3=2/4/6m/s²\nPOST_BRAKE_HOLD=2s"]
+        P5["HYSTERESIS_TIME=0,2s\nTTC_HYSTERESIS=0,15s\nD_BRAKE_L1/L2/L3\nV_EGO_MIN=1,39(C)/2,78(SRS v3)"]
     end
 
     ISO --> FRPER & FRCOD
@@ -720,17 +735,17 @@ flowchart TB
 
 ### Resumo executivo de rastreabilidade
 
-| Grupo FR | Nº de requisitos | Implementados | Desvios documentados | Conformidade |
-|----------|-----------------|--------------|---------------------|-------------|
-| FR-PER | 2 | 2 | 1 (V_EGO_MIN) | ✅ 100% |
-| FR-DEC | 2 | 2 | 0 | ✅ 100% |
-| FR-ALR | 2 | 2 | 0 | ✅ 100% |
-| FR-BRK | 5 | 5 | 3 (KP, MAX_JERK, POST_BRAKE bug) | ✅ 100% |
-| FR-FSM | 3 | 3 | 1 (pisos LPB — extensão) | ✅ 100% |
+| Grupo FR | Nº de requisitos | Implementados | Desvios SRS v3 (C pendente) | Conformidade |
+|----------|-----------------|--------------|------------------------------|-------------|
+| FR-PER | 2 | 2 | 1 (V_EGO_MIN: C usa 5 km/h, SRS v3 = 10 km/h) | ⚠️ C pendente |
+| FR-DEC | 2 | 2 | FR-DEC-005 removido (absorvido); DECEL_L3=6 m/s² ✅ | ✅ 100% |
+| FR-ALR | 2 | 2 | FR-ALR-005 removido (POST_BRAKE visual=0) ✅ | ✅ 100% |
+| FR-BRK | 5 | 5 | 1 SRS v3 (MAX_JERK=100 excede ≤10 m/s³); KP e POST_BRAKE bug corrigidos ✅ | ⚠️ C pendente |
+| FR-FSM | 3 | 3 | 1 (pisos LPB — extensão ao SRS) | ✅ 100% |
 | FR-COD | 3 | 3 | 0 | ✅ 100% |
-| **Total** | **17** | **17** | **5** | **✅ 100%** |
+| **Total** | **17** | **17** | **2 desvios C pendentes (SRS v3)** | **⚠️ C** / **✅ Simulink** |
 
-Todos os 17 requisitos funcionais rastreados estão implementados. Os 5 desvios documentados são mudanças de melhoria (não regressões): aumentam a segurança funcional ou corrigem inconsistências identificadas durante a fase de validação. Nenhum requisito obrigatório foi suprimido.
+Todos os 17 requisitos funcionais rastreados estão implementados. **Com a revisão SRS v3**, dois parâmetros do código C precisam de atualização: `V_EGO_MIN` (1,39 → 2,78 m/s) e `MAX_JERK` (100 → ≤10 m/s³). O modelo Simulink/Stateflow já está em conformidade com ambos.
 
 ---
 
@@ -746,11 +761,11 @@ Todos os 17 requisitos funcionais rastreados estão implementados. Os 5 desvios 
 
 ---
 
-### FR-DEC-005 — TTC adaptativo por condições de pista
+### FR-DEC-005 — *REMOVIDO no SRS v3*
 
-**Requisito:** Os limiares de TTC devem se adaptar às condições de pista (coeficiente de atrito, carga do veículo, velocidade relativa).
+> **Nota SRS v3:** FR-DEC-005 foi **removido** na revisão SRS v3 (Requisitos AEB.xlsx). A condição `is_closing` que esse requisito definia foi absorvida por FR-DEC-001 e FR-DEC-003. A lacuna original documentada aqui (TTC adaptativo por condições de pista) permanece fora do escopo do projeto, mas não é mais rastreada como um requisito formal.
 
-**Motivo da não implementação:** Requer modelo de coeficiente de atrito pista-pneu e estimador de carga — fora do escopo deste projeto. Os limiares fixos (4,0 / 3,0 / 2,2 / 1,8 s) são conservadores o suficiente para os cenários CCR em pista seca.
+**Lacuna técnica remanescente (sem ID formal):** Os limiares de TTC são fixos (4,0 / 3,0 / 2,2 / 1,8 s), sem adaptação por coeficiente de atrito ou carga. Os valores são conservadores para pista seca; em pista molhada os valores recomendados seriam 15–20% maiores. Fora do escopo desta implementação.
 
 ---
 
@@ -761,5 +776,9 @@ Todos os 17 requisitos funcionais rastreados estão implementados. Os 5 desvios 
 **Motivo:** O modelo Stateflow de referência não foi desenvolvido neste projeto (decisão arquitetural de usar C manual MISRA). Uma validação informal foi realizada com o simulador Python SIL em `python_sil/`. A validação formal exigiria um modelo de referência equivalente em Stateflow ou Modelica.
 
 ---
+
+---
+
+> **SRS v3 aplicada** (março 2026): FR-DEC-009 V_EGO_MIN=10 km/h; FR-BRK-004 jerk ≤ 10 m/s³; FR-DEC-002 DECEL_L3=6 m/s²; FR-DEC-005 removido; FR-ALR-005 removido. Desvios C documentados nas seções relevantes.
 
 *Última atualização: março de 2026 — Residência Tecnológica Stellantis / UFPE*
